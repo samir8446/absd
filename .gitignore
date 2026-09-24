@@ -1,0 +1,4 @@
+data/*.parquet
+.streamlit/secrets.toml
+.venv/
+__pycache__/
