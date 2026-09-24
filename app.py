@@ -33,9 +33,10 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 MASTER_NAME, IMP_NAME = "battery_master_data.parquet", "impedance_ground_truth.parquet"
 
+# High-contrast color mapping
 C = {
     "bg": "#090d16", "panel": "#0f172a", "card_bg": "#131c31", "grid": "#1e293b",
-    "text": "#f1f5f9", "muted": "#94a3b8", "accent": "#38bdf8", "measured": "#f8fafc",
+    "text": "#ffffff", "muted": "#cbd5e1", "accent": "#38bdf8", "measured": "#f8fafc",
     "ekf": "#38bdf8", "pinn": "#f472b6", "ml": "#a3e635", "eis": "#fbbf24",
     "eol": "#f87171", "r_int": "#fb923c", "r_ct": "#34d399",
     1.0: "#60a5fa", 2.0: "#34d399", 4.0: "#f87171",
@@ -43,46 +44,45 @@ C = {
 PARADIGM_COLORS = {"ECM + EKF": C["ekf"], "Hybrid PINN": C["pinn"]}
 POLICIES = ["Twin-Aware", "Fixed 1 A", "Fixed 2 A", "Fixed 4 A"]
 
+# CSS enforces strict high-contrast text on dark backgrounds regardless of global Streamlit theme
 st.markdown(f"""
 <style>
   .block-container {{padding-top: 1.5rem; padding-bottom: 3.5rem; max-width: 1600px;}}
-  html, body, [class*="css"] {{font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; color: {C['text']};}}
   
   .hero-container {{
       background: linear-gradient(135deg, #0f172a 0%, #091e3a 50%, #064e3b 100%);
       border: 1px solid #1e293b; border-radius: 16px; padding: 28px 36px; margin-bottom: 1.5rem;
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
   }}
-  .hero-container h1 {{font-size: 1.85rem; margin: 0; color: #ffffff; font-weight: 800; letter-spacing: -0.02em;}}
-  .hero-container p {{margin: 8px 0 0 0; color: {C['muted']}; font-size: 1.0rem; line-height: 1.5;}}
+  .hero-container h1 {{font-size: 1.85rem; margin: 0; color: #ffffff !important; font-weight: 800; letter-spacing: -0.02em;}}
+  .hero-container p {{margin: 8px 0 0 0; color: #cbd5e1 !important; font-size: 1.0rem; line-height: 1.5;}}
   
   .tech-pill {{
       display: inline-block; padding: 4px 12px; margin: 10px 8px 0 0; border-radius: 6px;
-      background: rgba(56, 189, 248, 0.1); color: {C['accent']}; font-size: 0.78rem;
-      border: 1px solid rgba(56, 189, 248, 0.3); font-weight: 600; text-transform: uppercase;
+      background: rgba(56, 189, 248, 0.15); color: #38bdf8 !important; font-size: 0.78rem;
+      border: 1px solid rgba(56, 189, 248, 0.4); font-weight: 700; text-transform: uppercase;
   }}
 
   div[data-testid="stMetric"] {{
-      background: {C['card_bg']}; border: 1px solid {C['grid']}; border-radius: 12px; padding: 16px 20px;
-      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      background-color: #131c31 !important; border: 1px solid #1e293b !important; 
+      border-radius: 12px; padding: 16px 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
   }}
-  div[data-testid="stMetricLabel"] p {{color: {C['muted']}; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;}}
-  div[data-testid="stMetricValue"] {{color: #ffffff; font-size: 1.5rem; font-weight: 800;}}
+  div[data-testid="stMetricLabel"] p {{color: #94a3b8 !important; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;}}
+  div[data-testid="stMetricValue"] {{color: #ffffff !important; font-size: 1.6rem; font-weight: 800;}}
 
   .scientific-card {{
-      background: {C['card_bg']}; border: 1px solid {C['grid']}; border-radius: 12px;
-      padding: 20px 24px; margin: 8px 0 16px 0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+      background-color: #131c31 !important; border: 1px solid #1e293b !important; border-radius: 12px;
+      padding: 20px 24px; margin: 8px 0 16px 0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
   }}
-  .scientific-card h4 {{margin: 0 0 10px 0; font-size: 0.95rem; color: {C['accent']}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800;}}
-  .scientific-card p, .scientific-card li {{color: {C['text']}; font-size: 0.9rem; margin: 4px 0; line-height: 1.5;}}
+  .scientific-card h4 {{margin: 0 0 10px 0; font-size: 1.0rem; color: #38bdf8 !important; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800;}}
+  .scientific-card p, .scientific-card li {{color: #f1f5f9 !important; font-size: 0.95rem; margin: 4px 0; line-height: 1.5;}}
 
   .section-title {{
-      font-size: 1.15rem; font-weight: 800; color: #ffffff; margin: 1.5rem 0 0.6rem 0;
-      border-left: 4px solid {C['accent']}; padding-left: 12px; letter-spacing: -0.01em;
+      font-size: 1.25rem; font-weight: 800; color: #ffffff !important; margin: 2.0rem 0 0.8rem 0;
+      border-left: 5px solid #38bdf8; padding-left: 14px; letter-spacing: -0.01em;
   }}
   
-  button[data-baseweb="tab"] {{font-size: 1.0rem; font-weight: 700; padding: 10px 24px;}}
-  section[data-testid="stSidebar"] {{border-right: 1px solid {C['grid']}; background-color: #070b13;}}
+  button[data-baseweb="tab"] {{font-size: 1.05rem; font-weight: 700; padding: 12px 28px;}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -97,20 +97,24 @@ def card(title: str, lines: List[str]) -> None:
                 unsafe_allow_html=True)
 
 
-def style_fig(fig: go.Figure, height: int = 450, title: Optional[str] = None) -> go.Figure:
+def style_fig(fig: go.Figure, height: int = 480, title: Optional[str] = None) -> go.Figure:
+    """Applies elite publication-grade Plotly chart formatting, fixing legends and margins."""
     fig.update_layout(
-        template="plotly_dark", height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=C["card_bg"],
-        font=dict(family="Inter, sans-serif", size=13, color=C["text"]),
-        margin=dict(l=70, r=30, t=55 if title else 25, b=50),
-        title=dict(text=title, x=0.01, font=dict(size=15, color="#ffffff", family="Inter, sans-serif", weight="bold")) if title else None,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                    bgcolor="rgba(15, 23, 42, 0.9)", bordercolor=C["grid"], borderwidth=1,
-                    font=dict(color=C["text"], size=12)),
-        hovermode="x unified",
-        hoverlabel=dict(bgcolor="#0f172a", font_size=12, font_family="Inter, sans-serif")
+        template="plotly_dark", height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0f172a",
+        font=dict(family="Inter, sans-serif", size=13, color="#ffffff"),
+        # Increased top and bottom margins to prevent title/legend overlap
+        margin=dict(l=70, r=30, t=80 if title else 30, b=90),
+        title=dict(text=title, x=0.02, y=0.96, font=dict(size=17, color="#ffffff", family="Inter, sans-serif", weight="bold")) if title else None,
+        # Legend moved to the bottom to avoid blocking data/titles
+        legend=dict(
+            orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5,
+            bgcolor="rgba(15, 23, 42, 1.0)", bordercolor="#334155", borderwidth=1.5,
+            font=dict(color="#ffffff", size=12)
+        ),
+        hovermode="x unified", hoverlabel=dict(bgcolor="#0f172a", font_size=13, font_family="Inter, sans-serif")
     )
-    fig.update_xaxes(gridcolor=C["grid"], zerolinecolor=C["grid"], title_font=dict(size=13, color="#ffffff", weight="bold"), tickfont=dict(color=C["muted"], size=11))
-    fig.update_yaxes(gridcolor=C["grid"], zerolinecolor=C["grid"], title_font=dict(size=13, color="#ffffff", weight="bold"), tickfont=dict(color=C["muted"], size=11))
+    fig.update_xaxes(gridcolor="#1e293b", zerolinecolor="#1e293b", title_font=dict(size=14, color="#ffffff", weight="bold"), tickfont=dict(color="#cbd5e1", size=12))
+    fig.update_yaxes(gridcolor="#1e293b", zerolinecolor="#1e293b", title_font=dict(size=14, color="#ffffff", weight="bold"), tickfont=dict(color="#cbd5e1", size=12))
     return fig
 
 
@@ -203,7 +207,7 @@ def resolve_sources(up_master, up_imp, master_url: str, imp_url: str
         for cand in (DATA_DIR / MASTER_NAME, APP_DIR / MASTER_NAME):
             if cand.exists():
                 master_path = cand
-                notes.append(f"Telemetry: local `{cand.relative_to(APP_DIR)}`")
+                notes.append(f"Telemetry: local data")
                 break
     if master_path is None and master_url:
         bar = st.sidebar.progress(0.0, text="Downloading telemetry…")
@@ -225,7 +229,9 @@ def resolve_sources(up_master, up_imp, master_url: str, imp_url: str
             notes.append("EIS: loaded")
     return store, imp, notes
 
-
+# =============================================================================
+# Main Application Layout
+# =============================================================================
 st.markdown("""
 <div class="hero-container">
   <h1>🔋 Enterprise Battery Digital Twin & Operando Diagnostics</h1>
@@ -240,10 +246,11 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### ⚙️ Telemetry & Assets")
-    with st.expander("Configure Data Sources", expanded=False):
-        up_master = st.file_uploader("Master telemetry (.parquet)", type=["parquet"], key="up_master")
-        up_imp = st.file_uploader("EIS ground truth (.parquet)", type=["parquet"], key="up_imp")
+    st.markdown("### 📁 Upload Datasets")
+    up_master = st.file_uploader("Master telemetry (.parquet)", type=["parquet"], key="up_master")
+    up_imp = st.file_uploader("EIS ground truth (.parquet)", type=["parquet"], key="up_imp")
+    
+    with st.expander("Advanced Remote URL Config", expanded=False):
         master_url = st.text_input("Telemetry URL", value=_secret("MASTER_PARQUET_URL"))
         imp_url = st.text_input("EIS URL", value=_secret("IMPEDANCE_PARQUET_URL"))
 
@@ -260,19 +267,29 @@ except Exception as exc:
     fail("Data ingestion failure", exc)
 
 if store is None or ct is None:
-    st.info(f"Please place `{MASTER_NAME}` in `./data/` or upload via the sidebar configuration panel.")
+    st.info("Please place `battery_master_data.parquet` in `./data/` or upload it directly using the sidebar menu on the left.")
     st.stop()
 
 meta = te.cell_meta(ct)
 cells = list(meta.index)
-with st.sidebar:
-    st.caption(" | ".join(source_notes))
-    st.markdown("### 🎯 Cell Under Test")
-    cell = st.selectbox("Select Target Cell ID", cells, index=cells.index("B0005") if "B0005" in cells else 0)
-    eol_ah = st.number_input("End-of-Life Threshold (Ah)", 0.8, 2.0, te.DEFAULT_EOL_AH, 0.05,
-                             help="NASA nominal cutoff: 1.4 Ah (30% capacity degradation).")
 
+# Centralized Battery Selection (Moved out of sidebar for immediate visibility)
+st.markdown("### 🎯 Global Battery Selection")
+colA, colB = st.columns([1, 2])
+with colA:
+    cell = st.selectbox("Select Target Cell ID for Analysis:", cells, index=cells.index("B0005") if "B0005" in cells else 0)
+with colB:
+    st.info(f"Currently analyzing Cell **{cell}**. Data status: " + " | ".join(source_notes))
+
+c_bol = float(meta.loc[cell, "C_bol_Ah"])
+ct_cell = ct[ct["Cell_ID"] == cell].sort_values("n")
+eis_cell = te.valid_eis(imp, cell)
+
+# Sidebar hyperparameters
+with st.sidebar:
+    st.markdown("---")
     st.markdown("### 🎛️ EKF Observer Tuning")
+    eol_ah = st.number_input("End-of-Life Threshold (Ah)", 0.8, 2.0, te.DEFAULT_EOL_AH, 0.05)
     sigma_v = st.slider("σᵥ — Voltage noise covariance (V)", 0.005, 0.200, 0.080, 0.005, format="%.3f")
     Q_SOH = [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2]
     Q_R = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2]
@@ -288,38 +305,37 @@ with st.sidebar:
     debug = st.toggle("Enable debug logging", value=False)
 
 twin_params = te.TwinParameters(sigma_v=sigma_v, q_soh_per_ah=q_soh, q_r_frac_per_ah=q_r, tau_rc_s=float(tau))
-pinn_cfg = te.PINNConfig(epochs=int(epochs), lambda_phys=float(lam_phys), lambda_bv=float(lam_bv),
-                         lambda_eis=float(lam_eis))
-ct_cell = ct[ct["Cell_ID"] == cell].sort_values("n")
-c_bol = float(meta.loc[cell, "C_bol_Ah"])
+pinn_cfg = te.PINNConfig(epochs=int(epochs), lambda_phys=float(lam_phys), lambda_bv=float(lam_bv), lambda_eis=float(lam_eis))
 soh_eol = te.soh_eol_for(c_bol, eol_ah)
-eis_cell = te.valid_eis(imp, cell)
 
-tab_eda, tab_twin, tab_ops = st.tabs([
-    "① Advanced EDA & ML Suite",
-    "② EKF Observer vs Hybrid PINN",
-    "③ Optimal Control & Economics"
+st.markdown("<br>", unsafe_allow_html=True)
+tab_data, tab_models, tab_ops = st.tabs([
+    "📊 1. Data Presentation & Analysis",
+    "🧠 2. Models & Predictive Forecasting",
+    "⚙️ 3. Operations & Optimal Control"
 ])
 
-
+# =============================================================================
+# Plotting Engine (Advanced Publication-Grade Figures)
+# =============================================================================
 def fig_fade(ct_all: pd.DataFrame, cell_id: str, y: str, eol_line: Optional[float]) -> go.Figure:
     fig = go.Figure()
     for cid, d in ct_all[~ct_all["outlier"]].groupby("Cell_ID"):
         if cid == cell_id:
             continue
-        fig.add_trace(go.Scatter(x=d["n"], y=d[y], mode="lines", line=dict(color="#334155", width=1),
+        fig.add_trace(go.Scatter(x=d["n"], y=d[y], mode="lines", line=dict(color="#475569", width=1.5),
                                  name="Cohort cells", legendgroup="others", showlegend=False,
                                  hovertemplate=f"{cid}<br>Cycle %{{x}}<br>{y}=%{{y:.3f}}<extra></extra>"))
     d = ct_all[ct_all["Cell_ID"] == cell_id]
     good, bad = d[~d["outlier"]], d[d["outlier"]]
     fig.add_trace(go.Scatter(x=good["n"], y=good[y], mode="lines+markers", name=f"Target Cell ({cell_id})",
-                             line=dict(color=C["accent"], width=3), marker=dict(size=5, color=C["accent"])))
+                             line=dict(color=C["accent"], width=3.5), marker=dict(size=6, color=C["accent"])))
     if len(bad):
         fig.add_trace(go.Scatter(x=bad["n"], y=bad[y], mode="markers", name="Outliers flagged",
-                                 marker=dict(symbol="x", size=9, color=C["eol"], line=dict(width=2))))
+                                 marker=dict(symbol="x", size=10, color=C["eol"], line=dict(width=2))))
     if eol_line is not None:
         fig.add_hline(y=eol_line, line_dash="dash", line_color=C["eol"], annotation_text="End-of-Life (EOL)",
-                      annotation_position="bottom right", annotation_font=dict(color=C["eol"], size=12))
+                      annotation_position="bottom right", annotation_font=dict(color=C["eol"], size=13, weight="bold"))
     fig.update_xaxes(title_text="Discharge Cycle Index (n)")
     fig.update_yaxes(title_text="Discharge Capacity (Ah)" if y == "Capacity_Ah" else "State of Health (SOH)")
     return style_fig(fig, 450, f"Long-Term Capacity Degradation Trajectory — {cell_id}")
@@ -344,9 +360,9 @@ def fig_peaks(curves: List[te.ICACurve]) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     n = [c.n for c in curves]
     fig.add_trace(go.Scatter(x=n, y=[c.peak_V for c in curves], mode="lines+markers", name="Peak Voltage",
-                             line=dict(color=C["accent"], width=2.5), marker=dict(size=6)), secondary_y=False)
+                             line=dict(color=C["accent"], width=2.5), marker=dict(size=7)), secondary_y=False)
     fig.add_trace(go.Scatter(x=n, y=[c.peak_height for c in curves], mode="lines+markers", name="Peak Height",
-                             line=dict(color=C["pinn"], width=2.5), marker=dict(size=6)), secondary_y=True)
+                             line=dict(color=C["pinn"], width=2.5), marker=dict(size=7)), secondary_y=True)
     fig.update_yaxes(title_text="Peak Potential (V)", secondary_y=False, title_font=dict(color=C["accent"]))
     fig.update_yaxes(title_text="Peak Magnitude", secondary_y=True, showgrid=False, title_font=dict(color=C["pinn"]))
     fig.update_xaxes(title_text="Discharge Cycle Index (n)")
@@ -355,7 +371,7 @@ def fig_peaks(curves: List[te.ICACurve]) -> go.Figure:
 
 def _forecast_frame(fig: go.Figure, n0: int, n_max: float, soh_eol_: float, row: Optional[int] = None) -> None:
     kw = dict(row=row, col=1) if row else {}
-    fig.add_vrect(x0=n0, x1=n_max, fillcolor="rgba(56, 189, 248, 0.06)", line_width=0, layer="below", **kw)
+    fig.add_vrect(x0=n0, x1=n_max, fillcolor="rgba(56, 189, 248, 0.08)", line_width=0, layer="below", **kw)
     fig.add_vline(x=n0, line_dash="dot", line_color=C["accent"], **kw)
     fig.add_hline(y=soh_eol_, line_dash="dash", line_color=C["eol"], **kw)
 
@@ -364,45 +380,45 @@ def fig_ml(results: List[te.MLForecast], ct_cell_: pd.DataFrame, n0: int, soh_eo
     fig = go.Figure()
     good = ct_cell_[~ct_cell_["outlier"]]
     fig.add_trace(go.Scatter(x=good["n"], y=good["SOH"], mode="markers", name="Measured SOH",
-                             marker=dict(color=C["measured"], size=6, opacity=0.8)))
+                             marker=dict(color=C["measured"], size=7, opacity=0.9)))
     palette = sample_colorscale("Turbo", list(np.linspace(0.15, 0.85, max(len(results), 2))))
     for r, col in zip(results, palette):
-        fig.add_trace(go.Scatter(x=r.n_grid, y=r.soh_pred, mode="lines", name=r.model, line=dict(color=col, width=2.5)))
+        fig.add_trace(go.Scatter(x=r.n_grid, y=r.soh_pred, mode="lines", name=r.model, line=dict(color=col, width=3.0)))
     n_max = max(float(r.n_grid.max()) for r in results)
     _forecast_frame(fig, n0, n_max, soh_eol_)
     fig.add_annotation(x=n0, y=1.0, text=f" Forecast Origin (n₀ = {n0})", showarrow=False, xanchor="left",
-                       font=dict(color=C["accent"], size=12, weight="bold"))
+                       font=dict(color=C["accent"], size=13, weight="bold"))
     fig.update_xaxes(title_text="Discharge Cycle Index (n)")
     fig.update_yaxes(title_text="State of Health (SOH)")
-    return style_fig(fig, 480, "Supervised Machine Learning SOH Forecasting Suite")
+    return style_fig(fig, 500, "Supervised Machine Learning SOH Forecasting Suite")
 
 
 def fig_compare(res: te.ComparisonResult) -> go.Figure:
     fig = go.Figure()
     m = res.measured
     fig.add_trace(go.Scatter(x=m["n"], y=m["SOH"], mode="markers", name="Measured Ground Truth",
-                             marker=dict(color=C["measured"], size=6)))
+                             marker=dict(color=C["measured"], size=7)))
     if res.ekf is not None:
         e = res.ekf.per_cycle.dropna(subset=["SOH"])
         fig.add_trace(go.Scatter(x=np.r_[e["n"], e["n"][::-1]],
                                  y=np.r_[e["SOH"] + 2 * e["SOH_std"], (e["SOH"] - 2 * e["SOH_std"])[::-1]],
-                                 fill="toself", fillcolor="rgba(56,189,248,0.15)", line=dict(width=0),
+                                 fill="toself", fillcolor="rgba(56,189,248,0.2)", line=dict(width=0),
                                  name="EKF ±2σ Uncertainty", hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=e["n"], y=e["SOH"], mode="lines", name="ECM + EKF Causal Observer",
-                                 line=dict(color=C["ekf"], width=2.5)))
+                                 line=dict(color=C["ekf"], width=3.0)))
     for name, (n_g, p_g) in res.predictions.items():
         col = PARADIGM_COLORS.get(name, C["ml"])
         mask = n_g >= res.n0
         fig.add_trace(go.Scatter(x=n_g[mask], y=p_g[mask], mode="lines", name=f"{name} Forecast",
-                                 line=dict(color=col, width=3, dash="dash" if name == "ECM + EKF" else "solid")))
+                                 line=dict(color=col, width=3.5, dash="dash" if name == "ECM + EKF" else "solid")))
         if name == "Hybrid PINN":
             fig.add_trace(go.Scatter(x=n_g[~mask], y=p_g[~mask], mode="lines", name="PINN Physics Fit",
-                                     line=dict(color=col, width=2, dash="dot")))
+                                     line=dict(color=col, width=2.5, dash="dot")))
     n_max = max(float(n.max()) for n, _ in res.predictions.values()) if res.predictions else float(m["n"].max())
     _forecast_frame(fig, res.n0, n_max, res.soh_eol)
     fig.update_xaxes(title_text="Discharge Cycle Index (n)")
     fig.update_yaxes(title_text="State of Health (SOH)")
-    return style_fig(fig, 500, f"Multi-Paradigm Comparative Forecasting & State Estimation ({res.cell_id})")
+    return style_fig(fig, 520, f"Multi-Paradigm Comparative Forecasting ({res.cell_id})")
 
 
 def fig_params(res: te.ComparisonResult) -> go.Figure:
@@ -425,23 +441,23 @@ def fig_params(res: te.ComparisonResult) -> go.Figure:
         fig.add_vline(x=res.n0, line_dash="dot", line_color=C["accent"], row=row, col=1)
         fig.update_yaxes(title_text="Resistance (mΩ)", row=row, col=1)
     fig.update_xaxes(title_text="Discharge Cycle Index (n)", row=2, col=1)
-    return style_fig(fig, 540, "Electrochemical Parameter Convergence vs. EIS Spectroscopy")
+    return style_fig(fig, 560, "Parameter Convergence vs. EIS Spectroscopy")
 
 
 def fig_innovation(ekf: te.EKFResult, sigma_v_: float) -> go.Figure:
     e = ekf.per_cycle.dropna(subset=["innov_mean_mV"])
     fig = go.Figure()
-    fig.add_hrect(y0=-2e3 * sigma_v_, y1=2e3 * sigma_v_, fillcolor="rgba(52, 211, 153, 0.08)", line_width=0)
+    fig.add_hrect(y0=-2e3 * sigma_v_, y1=2e3 * sigma_v_, fillcolor="rgba(52, 211, 153, 0.1)", line_width=0)
     fig.add_trace(go.Scatter(x=np.r_[e["n"], e["n"][::-1]],
                              y=np.r_[e["innov_mean_mV"] + e["innov_std_mV"], (e["innov_mean_mV"] - e["innov_std_mV"])[::-1]],
-                             fill="toself", fillcolor="rgba(56, 189, 248, 0.18)", line=dict(width=0),
+                             fill="toself", fillcolor="rgba(56, 189, 248, 0.2)", line=dict(width=0),
                              name="±1 Standard Deviation", hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=e["n"], y=e["innov_mean_mV"], mode="lines", name="Mean Voltage Innovation",
                              line=dict(color=C["ekf"], width=2.5)))
     fig.add_hline(y=0, line_color=C["muted"], line_dash="dash")
     fig.update_xaxes(title_text="Discharge Cycle Index (n)")
     fig.update_yaxes(title_text="Voltage Residual (V_meas − V_pred) [mV]")
-    return style_fig(fig, 360, "EKF Voltage Innovation & Residual Consistency (±2σᵥ)")
+    return style_fig(fig, 400, "EKF Voltage Innovation & Consistency (±2σᵥ)")
 
 
 def fig_pinn_loss(p: te.PINNResult) -> go.Figure:
@@ -450,10 +466,10 @@ def fig_pinn_loss(p: te.PINNResult) -> go.Figure:
                      ("bv", C["accent"]), ("eis", C["eis"])):
         if key in p.history.columns:
             fig.add_trace(go.Scatter(x=p.history["epoch"], y=p.history[key], mode="lines", name=f"Loss: {key}",
-                                     line=dict(color=col, width=2.5 if key == "total" else 1.5)))
+                                     line=dict(color=col, width=3.0 if key == "total" else 1.5)))
     fig.update_yaxes(type="log", title_text="Loss Value (Normalized Log Scale)")
     fig.update_xaxes(title_text="Training Epoch")
-    return style_fig(fig, 360, "Hybrid PINN Multi-Component Optimization Loss Curves")
+    return style_fig(fig, 400, "Hybrid PINN Optimization Loss Curves")
 
 
 def fig_policy(df: pd.DataFrame, policy: str, baselines: Dict[str, pd.DataFrame], soh_eol_ops: float) -> go.Figure:
@@ -464,7 +480,7 @@ def fig_policy(df: pd.DataFrame, policy: str, baselines: Dict[str, pd.DataFrame]
         mm = df["I"] == I
         if mm.any():
             fig.add_trace(go.Scatter(x=df.loc[mm, "cycle"], y=df.loc[mm, "I"], mode="markers", name=f"{I:g} A Rate",
-                                     marker=dict(color=C[I], size=7)), row=1, col=1, secondary_y=False)
+                                     marker=dict(color=C[I], size=8)), row=1, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=df["cycle"], y=df["T_amb"], mode="lines", name="Ambient Temp",
                              line=dict(color=C["muted"], width=1.5, dash="dot")), row=1, col=1, secondary_y=True)
     for name, d in {policy: df, **baselines}.items():
@@ -481,10 +497,13 @@ def fig_policy(df: pd.DataFrame, policy: str, baselines: Dict[str, pd.DataFrame]
     fig.update_yaxes(title_text="SOH (–)", row=2, col=1)
     fig.update_yaxes(title_text="Profit (CU)", row=3, col=1)
     fig.update_xaxes(title_text="Operational Cycle Index", row=3, col=1)
-    return style_fig(fig, 760, "Twin-Aware Lifecycle Operation & Economic Yield Optimization")
+    return style_fig(fig, 800, "Twin-Aware Lifecycle Operation & Economic Optimization")
 
 
-with tab_eda:
+# =============================================================================
+# Tab 1: Data Presentation & Analysis
+# =============================================================================
+with tab_data:
     try:
         k = st.columns(6)
         k[0].metric("Target Cell", cell)
@@ -501,8 +520,7 @@ with tab_eda:
         section("Electrochemical Diagnostics: Incremental Capacity Analysis (dQ/dV)")
         c1, c2, c3, c4 = st.columns(4)
         n_curves = c1.slider("Curves across life", 2, 12, 6)
-        ir = c2.toggle("IR-compensate voltage", value=True,
-                       help="Removes ohmic overpotential shift using load-step resistance to isolate non-ohmic polarization.")
+        ir = c2.toggle("IR-compensate voltage", value=True, help="Removes ohmic overpotential shift to isolate non-ohmic polarization.")
         dv = c3.select_slider("Voltage bin (mV)", [5, 10, 15, 20], value=10) / 1000
         win = c4.select_slider("Smoothing window", [5, 7, 9, 11, 15, 21], value=9)
         with st.spinner("Computing differential capacity pseudo-curves…"):
@@ -522,14 +540,22 @@ with tab_eda:
                          [f"Capacity ratio {diag['cap_ratio']:.2f} · peak height {diag['height_ratio']:.2f} "
                           f"· shift {diag['shift_mV']:.0f} mV"] + diag["interpretation"])
             st.caption("NASA cycling profiles operate at ~1C rate; peak broadening reflects kinetic overpotentials.")
+    except Exception as exc:
+        fail("Data Analysis Error", exc) if debug else st.error(f"Error: {exc}")
 
-        section("Supervised Machine Learning & RUL Forecasting Suite")
+
+# =============================================================================
+# Tab 2: Models & Predictive Forecasting (ML, EKF, PINN)
+# =============================================================================
+with tab_models:
+    try:
+        section("Supervised Machine Learning Surrogates")
         c1, c2, c3 = st.columns([3, 2, 2])
         models = c1.multiselect("Select ML Models", list(te.ML_MODELS), default=list(te.ML_MODELS))
-        frac = c2.slider("Forecast origin (fraction observed)", 0.2, 0.8, 0.4, 0.05, key="ml_frac")
-        use_pop = c3.toggle("Train on multi-cell cohort", value=True,
-                            help="Combine population aging trends with target cell observations.")
+        frac = c2.slider("ML Forecast origin (fraction observed)", 0.2, 0.8, 0.4, 0.05, key="ml_frac")
+        use_pop = c3.toggle("Train on multi-cell cohort", value=True, help="Combine population aging trends with target cell observations.")
         n0_ml = int(max(5, round(frac * meta.loc[cell, "cycles"])))
+        
         if st.button("▶ Train & Evaluate ML Surrogates", type="primary", key="ml_go"):
             prog = st.progress(0.0)
             out: List[te.MLForecast] = []
@@ -541,34 +567,26 @@ with tab_eda:
                     st.warning(f"{mname}: {exc}")
             prog.empty()
             st.session_state["ml"] = {"cfg": (cell, n0_ml, tuple(models), use_pop, eol_ah), "res": out}
-        saved = st.session_state.get("ml")
-        if saved and saved["res"]:
-            if saved["cfg"][0] != cell:
-                st.info("Stored results belong to another cell; click Train & Evaluate to update.")
+        
+        saved_ml = st.session_state.get("ml")
+        if saved_ml and saved_ml["res"]:
+            if saved_ml["cfg"][0] != cell:
+                st.info("Stored ML results belong to another cell; click Train & Evaluate to update.")
             else:
-                show(fig_ml(saved["res"], ct_cell, saved["cfg"][1], soh_eol))
+                show(fig_ml(saved_ml["res"], ct_cell, saved_ml["cfg"][1], soh_eol))
                 tbl = pd.DataFrame([{"Model": r.model, "RMSE": r.metrics.rmse, "MAE": r.metrics.mae,
                                      "R²": r.metrics.r2, "RUL true": r.metrics.rul_true,
                                      "RUL pred": r.metrics.rul_pred, "RUL error": r.metrics.rul_error,
                                      "Train Rows": r.train_rows, "Fit Time (s)": r.fit_seconds}
-                                    for r in saved["res"]]).set_index("Model")
+                                    for r in saved_ml["res"]]).set_index("Model")
                 st.dataframe(tbl.style.format({"RMSE": "{:.4f}", "MAE": "{:.4f}", "R²": "{:.3f}", "Fit Time (s)": "{:.2f}"},
                                             na_rep="—").highlight_min(subset=["RMSE"], color="#134e4a"))
-                st.caption("Predictive features are strictly causal operating parameters to eliminate data leakage.")
-    except Exception as exc:
-        fail("EDA Module Error", exc) if debug else st.error(f"Error: {exc}")
-
-
-with tab_twin:
-    try:
-        st.markdown("Rigorous comparative benchmarking evaluating **Pure ML**, **ECM + Extended Kalman Filter** "
-                    "(causal voltage-feedback observer), and the **Hybrid Physics-Informed Neural Network (PINN)** "
-                    "across identical held-out future horizons.")
+        
+        section("Physics-Informed Benchmarking: EKF Observer vs Hybrid PINN")
         c1, c2, c3 = st.columns([2, 2, 2])
-        frac2 = c1.slider("Forecast origin n₀ (fraction of life)", 0.2, 0.8, 0.4, 0.05, key="cmp_frac")
-        ml_pick = c2.selectbox("Benchmark ML Model", list(te.ML_MODELS), index=1)
-        reuse = c3.toggle("Reuse cached EKF replay", value=True,
-                          help="EKF observer is strictly causal; state trajectories at n₀ are invariant to future observations.")
+        frac2 = c1.slider("Twin Forecast origin n₀ (fraction of life)", 0.2, 0.8, 0.4, 0.05, key="cmp_frac")
+        ml_pick = c2.selectbox("Benchmark ML Model (for comparison)", list(te.ML_MODELS), index=1)
+        reuse = c3.toggle("Reuse cached EKF replay", value=True)
         ekf_key = (store.key, cell, tuple(sorted(asdict(twin_params).items())))
         cmp_cfg = (ekf_key, frac2, ml_pick, tuple(sorted(asdict(pinn_cfg).items())), eol_ah)
 
@@ -594,11 +612,12 @@ with tab_twin:
                 st.warning("Parameters updated; showing cached previous execution results.")
             for name, msg in res.errors.items():
                 st.warning(f"{name} warning: {msg}")
+            
             cols = st.columns(max(len(res.metrics), 1))
             for col, (name, m) in zip(cols, res.metrics.items()):
-                rul = "—" if m.rul_pred is None else f"{m.rul_pred}"
                 delta = None if m.rul_error is None else f"RUL error {m.rul_error:+d} cycles"
                 col.metric(f"{name} · RMSE", f"{m.rmse:.4f}", delta, delta_color="off")
+            
             show(fig_compare(res))
 
             a, b = st.columns(2)
@@ -609,10 +628,6 @@ with tab_twin:
                     show(fig_innovation(res.ekf, sigma_v))
                 if res.pinn is not None:
                     show(fig_pinn_loss(res.pinn))
-
-            section("Performance Scorecard")
-            st.dataframe(te.metrics_table(res.metrics).style.format(
-                {"RMSE": "{:.4f}", "MAE": "{:.4f}", "R²": "{:.3f}"}, na_rep="—"))
 
             if res.pinn is not None:
                 section("Identified Electrochemical Parameters (Hybrid PINN)")
@@ -632,26 +647,23 @@ with tab_twin:
                         f"Overpotential η_ct at 2A: {ph['eta_ct_2A_start_mV']:.0f} mV → {ph['eta_ct_2A_n0_mV']:.0f} mV",
                         f"Extra load polarization R_x = {ph['R_x_mOhm']:.1f} mΩ",
                         f"Optimization runtime = {res.pinn.train_seconds:.1f} s"])
-            with st.expander("Methodology · Governing Equations"):
-                st.latex(r"V = U_{OCV}(SOC) + I\,R_{int} + V_{RC},\quad "
-                         r"V_{RC}^{k+1} = e^{-\Delta t/\tau}V_{RC}^{k} + (1-e^{-\Delta t/\tau})R_{ct}I")
-                st.latex(r"\frac{dSOH}{dn} = -k\,e^{\frac{E_a}{R}\left(\frac{1}{T_{ref}}-\frac{1}{T}\right)}"
-                         r"\,(2C_{bol}\,SOH)\left(\frac{1-SOH+\epsilon}{L_{ref}}\right)^{-m}")
-                st.latex(r"\frac{dR_{j}}{dn} = \gamma_j R_{j,0}\left(-\frac{dSOH}{dn}\right),\qquad "
-                         r"\Delta V_{step} = I(R_{int}+R_x) + \frac{2RT}{F}\sinh^{-1}\!\left(\frac{I F R_{ct}}{2RT}\right)")
     except Exception as exc:
-        fail("Twin Module Error", exc) if debug else st.error(f"Error: {exc}")
+        fail("Models Module Error", exc) if debug else st.error(f"Error: {exc}")
 
 
+# =============================================================================
+# Tab 3: Optimal Control & Operations
+# =============================================================================
 with tab_ops:
     try:
+        section("Twin-Aware Operational Strategy Simulation")
         st.markdown("The **twin-aware** policy evaluates available operating currents at each cycle using the ECM + "
                     "degradation model to maximize expected net economic utility under strict safety boundaries.")
         c1, c2, c3 = st.columns(3)
         policy = c1.selectbox("Decision-Making Policy", POLICIES)
-        weight = c2.slider("Degradation penalty weight w", 0.25, 3.0, 1.0, 0.25, disabled=policy != "Twin-Aware",
-                           help="Lower = aggressive asset utilization; higher = conservative lifespan preservation.")
+        weight = c2.slider("Degradation penalty weight w", 0.25, 3.0, 1.0, 0.25, disabled=policy != "Twin-Aware")
         replacement = c3.number_input("Battery replacement cost (Currency Units)", 10.0, 2000.0, 150.0, 10.0)
+        
         with st.expander("Economic & Environmental Constraints"):
             p1, p2, p3 = st.columns(3)
             price = (p1.number_input("Revenue per Ah @ 1A", 0.0, 10.0, 0.80, 0.05),
@@ -699,11 +711,12 @@ with tab_ops:
             k[2].metric("Long-Run Profit Rate / h", f"{s['profit_per_h']:.3f}")
             k[3].metric("Mean Operating Current", f"{s['mean_I']:.2f} A")
             k[4].metric("Safety Violations", s["violations"])
+            
             show(fig_policy(saved["df"], saved["policy"], saved["base"], saved["soh_eol"]))
+            
             rows = [{"Policy": saved["policy"], **s}] + \
                 [{"Policy": n, **te.summarise_life(d)} for n, d in saved["base"].items()]
             tbl = pd.DataFrame(rows).set_index("Policy")[["cycles", "Ah", "profit", "profit_per_h", "mean_I", "violations"]]
-            st.dataframe(tbl.style.format({"Ah": "{:.0f}", "profit": "{:.1f}", "profit_per_h": "{:.3f}",
-                                           "mean_I": "{:.2f}"}))
+            st.dataframe(tbl.style.format({"Ah": "{:.0f}", "profit": "{:.1f}", "profit_per_h": "{:.3f}", "mean_I": "{:.2f}"}))
     except Exception as exc:
         fail("Operations Module Error", exc) if debug else st.error(f"Error: {exc}")
