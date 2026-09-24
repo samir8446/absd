@@ -377,7 +377,7 @@ def fig_ml(results: List[te.MLForecast], ct_cell_: pd.DataFrame, n0: int, soh_eo
     return style_fig(fig, 480, "Supervised Machine Learning SOH Forecasting Suite")
 
 
-def fig_compare(res: res: te.ComparisonResult) -> go.Figure:
+def fig_compare(res: te.ComparisonResult) -> go.Figure:
     fig = go.Figure()
     m = res.measured
     fig.add_trace(go.Scatter(x=m["n"], y=m["SOH"], mode="markers", name="Measured Ground Truth",
