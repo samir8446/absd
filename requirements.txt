@@ -1,7 +1,7 @@
-streamlit>=1.40
-pandas>=2.0
-numpy>=1.24
-pyarrow>=14.0
-scipy>=1.10
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
 scikit-learn>=1.3
-plotly>=5.18
+pyarrow>=14
+plotly>=5.15        # container-referenced legends; >=5.23 for font weight
+streamlit>=1.46     # st.context.theme; >=1.35 for chart on_select

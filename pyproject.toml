@@ -1,0 +1,18 @@
+[project]
+name = "battery-digital-twin"
+version = "4.0.0"
+description = "Battery digital twin & operando diagnostics (NASA Ames 18650 LiCoO2)"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --durations=5"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "NPY", "PD"]
+ignore = ["E501", "PD901", "B008"]
