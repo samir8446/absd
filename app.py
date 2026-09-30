@@ -58,7 +58,7 @@ DATA_DIR = APP_DIR / "data"
 RESULTS_DIR = APP_DIR / "results"
 MASTER_NAME, IMP_NAME = "battery_master_data.parquet", "impedance_ground_truth.parquet"
 POLICIES = ["Twin-Aware", "Fixed 1 A", "Fixed 2 A", "Fixed 4 A"]
-VIEWS = [":material/monitoring: Diagnostics", ":material/play_circle: Live twin",
+VIEWS = [":material/dashboard: Operations centre", ":material/monitoring: Data & diagnostics",
          ":material/psychology: Models & forecasting", ":material/tune: Operations & control"]
 SANS = "Inter, 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif"
 SERIF = "'STIX Two Text', 'Times New Roman', Times, serif"
@@ -491,12 +491,6 @@ def paradigm_style(name: str, P: Palette, i: int = 0) -> Tuple[str, str, str]:
         return P.semi, "dot", "triangle-up"
     if name == te.PF_NAME:
         return P.pf, "longdash", "star"
-    if name == te.HB_NAME:
-        return "#882255", "dashdot", "hexagon"
-    if name == te.GP_NAME:
-        return "#44AA99", "dot", "triangle-down"
-    if name == te.ENS_NAME:
-        return P.text, "solid", "circle"
     return P.series[i % len(P.series)], DASHES[(i + 3) % len(DASHES)], SYMBOLS[i % len(SYMBOLS)]
 
 
@@ -655,7 +649,7 @@ def fig_fade(ct_all: pd.DataFrame, cell_id: str, y: str, eol_line: Optional[floa
     return style_fig(fig, P, 470, f"Capacity fade trajectory, {cell_id} against cohort")
 
 
-def fig_cohort_grid(ct_all: pd.DataFrame, meta: pd.DataFrame, cell_id: Any, P: Palette,
+def fig_cohort_grid(ct_all: pd.DataFrame, meta: pd.DataFrame, cell_id: str, P: Palette,
                     normalise_x: bool = False) -> go.Figure:
     """One full-width panel per ambient temperature, stacked; every battery has its own colour and
     marker (the same as in every other chart) and its own legend entry."""
@@ -673,10 +667,10 @@ def fig_cohort_grid(ct_all: pd.DataFrame, meta: pd.DataFrame, cell_id: Any, P: P
             if d.empty:
                 continue
             col, sym = cell_style(cid, cells)
-            is_t = cid in cell_id if isinstance(cell_id, (list, tuple, set)) else cid == cell_id
+            is_t = cid == cell_id
             x = d["n"] / d["n"].max() if normalise_x else d["n"]
             fig.add_trace(go.Scatter(
-                x=x, y=d["SOH"], mode="lines+markers", name=cell_label(cid, meta) + ("  ★ selected" if is_t else ""),
+                x=x, y=d["SOH"], mode="lines+markers", name=cell_label(cid, meta) + ("  ★ target" if is_t else ""),
                 legendgroup=cid, line=dict(color=col, width=3.4 if is_t else 1.8),
                 marker=dict(symbol=sym, size=7 if is_t else 5, maxdisplayed=14, line=dict(color=P.plot_bg, width=0.5)),
                 hovertemplate=f"<b>{cid}</b> n=%{{x}}: SOH %{{y:.3f}}<extra></extra>"), row=gi + 1, col=1)
@@ -1499,23 +1493,13 @@ def fig_fleet_map(fs: pd.DataFrame, P: Palette) -> go.Figure:
     return fig
 
 
-def fig_risk_matrix(fs: pd.DataFrame, P: Palette, cell_id: str, highlight: Optional[Sequence[str]] = None) -> go.Figure:
-    """Risk matrix: remaining life (x) against degradation speed (y). With ``highlight`` the selected
-    batteries are drawn in colour and the rest of the fleet as grey context."""
-    d_all = fs.reset_index()
-    d = d_all[d_all["Cell_ID"].isin(highlight)] if highlight else d_all
-    finite = d_all["Quick RUL"].replace(np.inf, np.nan)
-    cap = float(np.nanmax(finite)) if np.isfinite(finite).any() else 300
+def fig_risk_matrix(fs: pd.DataFrame, P: Palette, cell_id: str) -> go.Figure:
+    """Risk matrix: remaining life (x) against degradation speed (y)."""
+    d = fs.reset_index()
+    cap = float(np.nanmax(d["Quick RUL"].replace(np.inf, np.nan))) if np.isfinite(d["Quick RUL"].replace(np.inf, np.nan)).any() else 300
     cap = max(cap * 1.2, 50)
     x = d["Quick RUL"].replace(np.inf, cap).clip(lower=1)
     fig = go.Figure()
-    if highlight:
-        ctx = d_all[~d_all["Cell_ID"].isin(highlight)]
-        if len(ctx):
-            fig.add_trace(go.Scatter(
-                x=ctx["Quick RUL"].replace(np.inf, cap).clip(lower=1), y=ctx["Fade per 100 cycles (%)"],
-                mode="markers", name="Rest of fleet", marker=dict(size=8, color=P.cohort, opacity=0.55),
-                text=ctx["Cell_ID"], hovertemplate="%{text}<extra>fleet</extra>"))
     fig.add_vrect(x0=1, x1=15, fillcolor=rgba("#D55E00", 0.10), line_width=0)
     fig.add_vrect(x0=15, x1=50, fillcolor=rgba("#E69F00", 0.08), line_width=0)
     for risk in te.RISK_LEVELS:
@@ -1525,7 +1509,7 @@ def fig_risk_matrix(fs: pd.DataFrame, P: Palette, cell_id: str, highlight: Optio
         fig.add_trace(go.Scatter(
             x=x[m], y=d.loc[m, "Fade per 100 cycles (%)"], mode="markers+text", name=f"{RISK_ICON[risk]} {risk}",
             text=d.loc[m, "Cell_ID"], textposition="top center", textfont=dict(size=11, color=P.text),
-            marker=dict(size=10 + 16 * np.sqrt(d.loc[m, "Cycles"] / d_all["Cycles"].max()), color=RISK_COLORS[risk],
+            marker=dict(size=10 + 16 * np.sqrt(d.loc[m, "Cycles"] / d["Cycles"].max()), color=RISK_COLORS[risk],
                         opacity=0.85, line=dict(width=[3 if c == cell_id else 1 for c in d.loc[m, "Cell_ID"]],
                                                 color=P.text)),
             customdata=np.column_stack([d.loc[m, "SOH"], d.loc[m, "Alerts"]]),
@@ -1576,196 +1560,6 @@ def build_report_html(title: str, sections: List[Tuple[str, Any]]) -> str:
             f"<style>{css}</style></head><body><header><h1>{html.escape(title)}</h1>"
             f"<div>Battery digital twin · engine {te.ENGINE_VERSION} · generated {stamp}</div></header>"
             + "".join(parts) + "</body></html>")
-
-
-# =============================================================================
-# Figures: live replay, DP policy, half-cell fitting
-# =============================================================================
-def fig_replay(ct_cell: pd.DataFrame, pc: pd.DataFrame, fc: Any, n: int, soh_eol: float, P: Palette,
-               reveal: bool, n_max: int) -> go.Figure:
-    good = ct_cell[~ct_cell["outlier"]]
-    seen, future = good[good["n"] <= n], good[good["n"] > n]
-    est = pc[pc["n"] <= n]
-    fig = go.Figure()
-    add_band(fig, est["n"].to_numpy(), (est["SOH"] - 2 * est["SOH_std"]).to_numpy(),
-             (est["SOH"] + 2 * est["SOH_std"]).to_numpy(), P.ekf, "Twin estimate ±2σ", group="est", alpha=0.18)
-    if fc is not None:
-        m = fc.n_grid > n
-        add_band(fig, fc.n_grid[m], fc.lo[m], fc.hi[m], P.pinn, f"{int(100 * fc.level)}% forecast band",
-                 group="fc", alpha=0.16)
-        fig.add_trace(go.Scatter(x=fc.n_grid[m], y=fc.soh[m], mode="lines", name="Forecast (median)",
-                                 legendgroup="fc", line=dict(color=P.pinn, width=2.6, dash="dash"),
-                                 hovertemplate="%{y:.4f}<extra>forecast</extra>"))
-    if reveal and len(future):
-        fig.add_trace(go.Scatter(x=future["n"], y=future["SOH"], mode="markers", name="Future (hidden from twin)",
-                                 marker=dict(color=P.muted, size=5, opacity=0.35, symbol="circle-open"),
-                                 hovertemplate="%{y:.4f}<extra>future</extra>"))
-    fig.add_trace(go.Scatter(x=seen["n"], y=seen["SOH"], mode="markers", name="Measured so far",
-                             marker=dict(color=P.measured, size=6), hovertemplate="%{y:.4f}<extra>measured</extra>"))
-    fig.add_trace(go.Scatter(x=est["n"], y=est["SOH"], mode="lines", name="Twin estimate (causal)", legendgroup="est",
-                             line=dict(color=P.ekf, width=3), hovertemplate="%{y:.4f}<extra>twin</extra>"))
-    if len(est):
-        fig.add_trace(go.Scatter(x=[est["n"].iloc[-1]], y=[est["SOH"].iloc[-1]], mode="markers", showlegend=False,
-                                 marker=dict(size=16, color=P.ekf, line=dict(color=P.plot_bg, width=3)), hoverinfo="skip"))
-    fig.add_vline(x=n, line_color=P.ekf, line_width=1.5, line_dash="dot",
-                  annotation_text=f"now: n = {n}", annotation_font=dict(color=P.ekf, size=12))
-    fig.add_hline(y=soh_eol, line_dash="dash", line_color=P.eol, annotation_text="End of life",
-                  annotation_font=dict(color=P.eol))
-    lo_y = min(float(good["SOH"].min()), soh_eol) - 0.03
-    fig.update_xaxes(title_text="Discharge cycle n", range=[0, n_max])
-    fig.update_yaxes(title_text="State of health SOH (–)", range=[lo_y, 1.04])
-    return style_fig(fig, P, 520, "Live twin: assimilating one discharge at a time", hovermode="x unified")
-
-
-def fig_replay_track(track: pd.DataFrame, pc: pd.DataFrame, n: int, rul_true: Optional[int], P: Palette,
-                     n_max: int) -> go.Figure:
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12,
-                        subplot_titles=("Predicted end of life converging as data arrive",
-                                        "Personalised degradation rate k (self-updating parameter)"))
-    _style_subplot_titles(fig, P)
-    t = track[track["n"] <= n]
-    add_band(fig, t["n"].to_numpy(), t["eol_lo"].to_numpy(), t["eol_hi"].to_numpy(), P.pinn, "EOL 90% band",
-             group="eol", alpha=0.18, row=1, col=1)
-    fig.add_trace(go.Scatter(x=t["n"], y=t["eol_med"], mode="lines", name="Predicted EOL cycle", legendgroup="eol",
-                             line=dict(color=P.pinn, width=2.6), hovertemplate="%{y:.0f}<extra>EOL</extra>"), row=1, col=1)
-    if rul_true is not None:
-        fig.add_hline(y=rul_true, line_dash="dash", line_color=P.eol, row=1, col=1,
-                      annotation_text=f"actual EOL n = {rul_true}", annotation_font=dict(color=P.eol))
-    e = pc[pc["n"] <= n]
-    fig.add_trace(go.Scatter(x=e["n"], y=e["k_ah"] * 1e4, mode="lines", name="k (×10⁻⁴ per Ah)",
-                             line=dict(color=P.ekf, width=2.6), hovertemplate="%{y:.3f}<extra>k</extra>"), row=2, col=1)
-    ks = e["logk_std"] if "logk_std" in e else None
-    if ks is not None and len(e):
-        add_band(fig, e["n"].to_numpy(), (e["k_ah"] * np.exp(-2 * ks) * 1e4).to_numpy(),
-                 (e["k_ah"] * np.exp(2 * ks) * 1e4).to_numpy(), P.ekf, "k ±2σ", group="k", alpha=0.15, row=2, col=1)
-    fig.update_xaxes(range=[0, n_max])
-    fig.update_xaxes(title_text="Discharge cycle n (data assimilated so far)", row=2, col=1)
-    fig.update_yaxes(title_text="EOL cycle", row=1, col=1)
-    fig.update_yaxes(title_text="k ×10⁴", row=2, col=1)
-    return style_fig(fig, P, 640, None)
-
-
-def fig_dp_policy(dp: te.DPResult, P: Palette) -> go.Figure:
-    z = np.where(dp.action < 0, -1, np.array(dp.currents)[np.clip(dp.action, 0, None)])
-    labels = ["Replace"] + [f"{c:g} A" for c in dp.currents]
-    vals = [-1] + list(dp.currents)
-    palette = ["#D55E00", "#56B4E9", "#009E73", "#E69F00", "#CC79A7"][: len(vals)]
-    idx = np.vectorize(lambda v: vals.index(v))(z)
-    cs = []
-    for i, c in enumerate(palette):
-        cs += [[i / len(palette), c], [(i + 1) / len(palette), c]]
-    fig = make_subplots(rows=2, cols=1, vertical_spacing=0.14, row_heights=[0.72, 0.28],
-                        subplot_titles=("Optimal action by state of health and season", "Ambient temperature"))
-    _style_subplot_titles(fig, P)
-    fig.add_trace(go.Heatmap(x=dp.phases, y=dp.soh_grid, z=idx, colorscale=cs, zmin=-0.5, zmax=len(palette) - 0.5,
-                             colorbar=dict(tickvals=list(range(len(labels))), ticktext=labels, thickness=14, len=0.7,
-                                           y=0.64, tickfont=dict(color=P.text)),
-                             customdata=np.array(labels)[idx],
-                             hovertemplate="season cycle %{x:.0f} · SOH %{y:.3f}<br>%{customdata}<extra></extra>"),
-                  row=1, col=1)
-    fig.add_trace(go.Scatter(x=dp.phases, y=dp.replace_boundary, mode="lines+markers", name="Replacement boundary",
-                             line=dict(color=P.text, width=2.5, dash="dash"), marker=dict(size=6),
-                             hovertemplate="replace below SOH %{y:.3f}<extra></extra>"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=dp.phases, y=dp.T_amb, mode="lines+markers", name="Ambient", showlegend=False,
-                             line=dict(color=P.eis, width=2.5), hovertemplate="%{y:.1f} °C<extra></extra>"),
-                  row=2, col=1)
-    fig.update_yaxes(title_text="SOH (–)", row=1, col=1)
-    fig.update_yaxes(title_text="°C", row=2, col=1)
-    fig.update_xaxes(title_text="Cycle within the seasonal period", row=2, col=1)
-    return style_fig(fig, P, 700, f"Dynamic-programming policy · optimal long-run profit rate ρ* = {dp.rho:.4f} CU/h",
-                     hovermode="closest")
-
-
-def fig_half_cell_fits(fits: List[te.HalfCellFit], P: Palette) -> go.Figure:
-    fig = make_subplots(rows=2, cols=1, vertical_spacing=0.14,
-                        subplot_titles=("Pseudo-OCV (IR-compensated) and half-cell model fit",
-                                        "Electrode potentials at beginning of life (vs Li/Li⁺)"))
-    _style_subplot_titles(fig, P)
-    cols = sample_colorscale("Viridis", list(np.linspace(*P.ica_range, max(len(fits), 2))))
-    for f, c in zip(fits, cols):
-        fig.add_trace(go.Scatter(x=f.q, y=f.v, mode="markers", name=f"n = {f.n} data", legendgroup=f"n{f.n}",
-                                 marker=dict(color=c, size=4, opacity=0.55),
-                                 hovertemplate="%{y:.3f} V<extra>data</extra>"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=f.q, y=f.v_fit, mode="lines", name=f"n = {f.n} fit ({f.rmse_mV:.1f} mV)",
-                                 legendgroup=f"n{f.n}", line=dict(color=c, width=2.4),
-                                 hovertemplate="%{y:.3f} V<extra>fit</extra>"), row=1, col=1)
-    f0 = fits[0]
-    q = f0.q
-    y = f0.params["y0"] + q / f0.params["Cp_Ah"]
-    x = f0.params["x0"] - q / f0.params["Cn_Ah"]
-    fig.add_trace(go.Scatter(x=q, y=te.ocp_lco(y), mode="lines", name="Positive: LiCoO₂",
-                             line=dict(color=P.accent, width=2.6), hovertemplate="%{y:.3f} V<extra>LCO</extra>"),
-                  row=2, col=1)
-    fig.add_trace(go.Scatter(x=q, y=te.ocp_graphite(x), mode="lines", name="Negative: graphite",
-                             line=dict(color=P.r_ct, width=2.6), hovertemplate="%{y:.3f} V<extra>graphite</extra>"),
-                  row=2, col=1)
-    fig.update_xaxes(title_text="Discharged capacity (Ah)", row=2, col=1)
-    fig.update_yaxes(title_text="Cell voltage (V)", row=1, col=1)
-    fig.update_yaxes(title_text="Potential vs Li/Li⁺ (V)", row=2, col=1)
-    return style_fig(fig, P, 760, None, hovermode="closest")
-
-
-def fig_half_cell_modes(tab: pd.DataFrame, P: Palette) -> go.Figure:
-    fig = go.Figure()
-    for i, (col, name) in enumerate((("Capacity loss (%)", "Capacity loss"), ("LLI (%)", "Loss of lithium inventory"),
-                                     ("LAM_PE (%)", "LAM positive (LiCoO₂)"), ("LAM_NE (%)", "LAM negative (graphite)"))):
-        fig.add_trace(go.Scatter(x=tab["n"], y=tab[col], mode="lines+markers", name=name,
-                                 line=dict(color=P.mode_colors[i], width=3 if i else 2, dash=DASHES[i]),
-                                 marker=dict(symbol=SYMBOLS[i], size=9),
-                                 hovertemplate="%{y:.2f}%<extra>" + name + "</extra>"))
-    fig.add_hline(y=0, line_color=P.muted, line_width=1)
-    fig.update_xaxes(title_text="Discharge cycle n")
-    fig.update_yaxes(title_text="% of beginning-of-life value")
-    return style_fig(fig, P, 500, "Quantitative degradation modes from half-cell fitting")
-
-
-def fig_dq_curves(ct_all: pd.DataFrame, el: Dict[str, Any], P: Palette) -> go.Figure:
-    """Delta-Q(V) = Q_nb(V) - Q_na(V) per cell, coloured by log10 cycle life (Severson et al. 2019, Fig. 2)."""
-    tab = el["table"].set_index("Cell_ID")
-    lives = tab["life"].dropna()
-    lo, hi = (np.log10(lives.min()), np.log10(lives.max())) if len(lives) else (1, 3)
-    fig = go.Figure()
-    for cid, d in ct_all[~ct_all["outlier"]].groupby("Cell_ID"):
-        dq = te.delta_q_curve(d, el["n_a"], el["n_b"])
-        if dq is None:
-            continue
-        life = tab.loc[cid, "life"] if cid in tab.index else np.nan
-        frac = (np.log10(life) - lo) / max(hi - lo, 1e-9) if np.isfinite(life) else None
-        col = sample_colorscale("Viridis", [float(np.clip(frac, 0, 1))])[0] if frac is not None else P.cohort
-        fig.add_trace(go.Scatter(x=1000 * dq, y=te.QV_GRID, mode="lines", name=cid, showlegend=False,
-                                 line=dict(color=col, width=2 if frac is not None else 1, dash="solid" if frac is not None else "dot"),
-                                 hovertemplate=f"<b>{cid}</b> life {life if np.isfinite(life) else 'censored'}"
-                                               "<br>ΔQ %{x:.1f} mAh at %{y:.2f} V<extra></extra>"))
-    if len(lives):
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", showlegend=False, hoverinfo="skip",
-                                 marker=dict(colorscale="Viridis", cmin=lo, cmax=hi, color=[lo], showscale=True,
-                                             colorbar=dict(title=dict(text="log₁₀ life", font=dict(color=P.text)),
-                                                           tickfont=dict(color=P.muted), thickness=12))))
-    fig.add_vline(x=0, line_color=P.muted, line_width=1)
-    fig.update_xaxes(title_text=f"ΔQ(V) = Q(n={el['n_b']}) − Q(n={el['n_a']})  (mAh)")
-    fig.update_yaxes(title_text="Voltage (V)")
-    return style_fig(fig, P, 520, "Early-life ΔQ(V) curves, coloured by eventual cycle life (dotted = censored)",
-                     hovermode="closest")
-
-
-def fig_lifetime_parity(el: Dict[str, Any], P: Palette, all_cells: Sequence[str]) -> go.Figure:
-    d = el["loco"]
-    fig = go.Figure()
-    lo, hi = float(min(d["life"].min(), d["life_pred"].min())) * 0.85, float(max(d["life"].max(), d["life_pred"].max())) * 1.15
-    fig.add_trace(go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="Perfect", line=dict(color=P.muted, dash="dash")))
-    fig.add_trace(go.Scatter(x=[lo, hi, hi, lo], y=[lo * 0.8, hi * 0.8, hi * 1.2, lo * 1.2], fill="toself",
-                             fillcolor=rgba(P.muted, 0.1), line=dict(width=0), name="±20 %", hoverinfo="skip"))
-    for _, r in d.iterrows():
-        col, sym = cell_style(r["Cell_ID"], all_cells)
-        fig.add_trace(go.Scatter(x=[r["life"]], y=[r["life_pred"]], mode="markers+text", text=[r["Cell_ID"]],
-                                 textposition="top center", textfont=dict(size=10, color=P.muted), showlegend=False,
-                                 marker=dict(color=col, symbol=sym, size=11, line=dict(color=P.text, width=0.8)),
-                                 hovertemplate=f"<b>{r['Cell_ID']}</b><br>actual %{{x:.0f}} · predicted %{{y:.0f}} cycles"
-                                               "<extra></extra>"))
-    fig.update_xaxes(title_text="Actual cycles to end of life", type="log")
-    fig.update_yaxes(title_text="Predicted from early cycles (leave-one-cell-out)", type="log")
-    return style_fig(fig, P, 520, f"Early-life lifetime prediction · MAPE {el['mape_pct']:.1f}% "
-                                  f"(cohort-mean baseline {el['baseline_mape_pct']:.1f}%)", hovermode="closest")
 
 
 # =============================================================================
@@ -1842,41 +1636,6 @@ def est_cached(_ct: pd.DataFrame, _imp: Optional[pd.DataFrame], key: str, model:
 @st.cache_data(show_spinner=False, max_entries=8)
 def pooled_ea_cached(_ct: pd.DataFrame, key: str, min_ambient: float) -> Dict[str, Any]:
     return te.estimate_pooled_arrhenius(_ct, min_ambient_C=min_ambient)
-
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def replay_cached(_cell_df: pd.DataFrame, _ct: pd.DataFrame, _imp: Optional[pd.DataFrame], key: str, cell: str,
-                  soh_eol: float, level: float) -> Tuple[te.EKFResult, pd.DataFrame]:
-    r = te.run_dual_twin(_cell_df, _ct, _imp, cell, te.TwinParameters(), None)
-    n_max = int(r.per_cycle["n"].max() * 1.6)
-    rows = []
-    for n in r.per_cycle["n"].astype(int):
-        if n < 5:
-            continue
-        f = te.twin_forecast(r, int(n), n_max, soh_eol, level)
-        rs = f.rul_samples[np.isfinite(f.rul_samples)] if f.rul_samples is not None else np.array([])
-        if len(rs):
-            rows.append({"n": int(n), "eol_med": n + float(np.median(rs)), "eol_lo": n + float(np.quantile(rs, 0.05)),
-                         "eol_hi": n + float(np.quantile(rs, 0.95)), "frac_censored": 1 - len(rs) / len(f.rul_samples)})
-    return r, pd.DataFrame(rows)
-
-
-@st.cache_data(show_spinner=False, max_entries=4)
-def dp_cached(econ: Dict[str, Any], phys: Dict[str, Any], maint: Dict[str, Any], amb_mean: float, amb_amp: float,
-              n_soh: int, n_phase: int) -> te.DPResult:
-    return te.solve_replacement_dp(te.Economics(**econ), te.CellPhysics(**phys), te.MaintenanceModel(**maint),
-                                   n_soh=n_soh, n_phase=n_phase, ambient_mean_C=amb_mean, ambient_amp_C=amb_amp)
-
-
-@st.cache_data(show_spinner=False, max_entries=16)
-def half_cell_cached(_prep: pd.DataFrame, _ct_cell: pd.DataFrame, key: str, cell: str, n_curves: int,
-                     ir: bool) -> Tuple[pd.DataFrame, List[te.HalfCellFit]]:
-    return te.half_cell_trajectory(_prep, _ct_cell, n_curves, ir)
-
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def early_life_cached(_ct: pd.DataFrame, key: str, eol_ah: float, n_a: int, n_b: int) -> Dict[str, Any]:
-    return te.early_life_lifetime(_ct, eol_ah, n_a, n_b)
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -2029,100 +1788,19 @@ inject_css(P)
 # =============================================================================
 # Hero
 # =============================================================================
-HERO_CSS = """<style>
-.bt-hero {display: flex; align-items: center; gap: 28px; padding: 22px 30px 20px 30px;}
-.bt-hero-text {position: relative; flex: 1 1 auto; min-width: 0;}
-.bt-hero .bt-title {font-size: 1.85rem;}
-.bt-hero .bt-sub {max-width: 60ch; font-size: 1.02rem;}
-.bt-art {position: relative; flex: 0 0 460px; width: 460px; height: 210px;}
-.bt-art svg {position: absolute; inset: 0; overflow: visible;}
-.bt-pkt {position: absolute; left: 0; top: 0; width: 9px; height: 9px; border-radius: 50%;
-  offset-anchor: 50% 50%; offset-rotate: 0deg; animation: bt-move 2.8s linear infinite; opacity: 0;}
-.bt-pkt-up {offset-path: path('M 118 72 C 190 14, 270 14, 342 72'); background: #7FE3FF;
-  box-shadow: 0 0 10px 2px rgba(127,227,255,0.9);}
-.bt-pkt-down {offset-path: path('M 342 150 C 270 208, 190 208, 118 150'); background: #FFD166;
-  box-shadow: 0 0 10px 2px rgba(255,209,102,0.9);}
-@keyframes bt-move {0% {offset-distance: 0%; opacity: 0;} 12% {opacity: 1;} 88% {opacity: 1;}
-  100% {offset-distance: 100%; opacity: 0;}}
-.bt-level {transform-box: fill-box; transform-origin: 50% 100%; animation: bt-charge 7s ease-in-out infinite;}
-@keyframes bt-charge {0%, 100% {transform: scaleY(1);} 50% {transform: scaleY(0.3);}}
-.bt-draw {stroke-dasharray: 240; stroke-dashoffset: 240; animation: bt-draw 7s ease-in-out infinite;}
-@keyframes bt-draw {0% {stroke-dashoffset: 240;} 55%, 90% {stroke-dashoffset: 0;} 100% {stroke-dashoffset: 0; opacity: 0;}}
-.bt-ring {transform-box: fill-box; transform-origin: center; animation: bt-ring 2.2s ease-out infinite;}
-@keyframes bt-ring {0% {transform: scale(1); opacity: 0.9;} 100% {transform: scale(2.0); opacity: 0;}}
-.bt-scan {animation: bt-scan 3.5s ease-in-out infinite;}
-@keyframes bt-scan {0%, 100% {transform: translateY(0); opacity: 0.0;} 10% {opacity: 0.8;} 50% {transform: translateY(118px); opacity: 0.8;} 60% {opacity: 0;}}
-.bt-glow {animation: bt-glow 3s ease-in-out infinite;}
-@keyframes bt-glow {0%, 100% {opacity: 0.35;} 50% {opacity: 0.9;}}
-@media (max-width: 1150px) {.bt-art {display: none;}}
-@media (prefers-reduced-motion: reduce) {.bt-pkt, .bt-level, .bt-draw, .bt-ring, .bt-scan, .bt-glow {animation: none;}
-  .bt-pkt {opacity: 0;} .bt-draw {stroke-dashoffset: 0;}}
-</style>"""
-
-HERO_ART = """<div class="bt-art" aria-hidden="true">
-<svg width="460" height="210" viewBox="0 0 460 210" xmlns="http://www.w3.org/2000/svg">
- <defs>
-  <linearGradient id="btMetal" x1="0" x2="1" y1="0" y2="0">
-   <stop offset="0" stop-color="#8FA6BE"/><stop offset="0.45" stop-color="#EEF5FB"/><stop offset="1" stop-color="#6F869F"/>
-  </linearGradient>
-  <linearGradient id="btCharge" x1="0" x2="0" y1="0" y2="1">
-   <stop offset="0" stop-color="#9BF6C9"/><stop offset="1" stop-color="#1FB57A"/>
-  </linearGradient>
- </defs>
- <!-- data links -->
- <path d="M 118 72 C 190 14, 270 14, 342 72" fill="none" stroke="rgba(127,227,255,0.55)" stroke-width="1.6" stroke-dasharray="4 5"/>
- <path d="M 342 150 C 270 208, 190 208, 118 150" fill="none" stroke="rgba(255,209,102,0.55)" stroke-width="1.6" stroke-dasharray="4 5"/>
- <text x="230" y="22" text-anchor="middle" font-size="10.5" letter-spacing="1.5" fill="rgba(255,255,255,0.92)" font-weight="700">V · I · T TELEMETRY</text>
- <text x="230" y="206" text-anchor="middle" font-size="10.5" letter-spacing="1.5" fill="rgba(255,255,255,0.92)" font-weight="700">SOH · RUL · CONTROL</text>
- <!-- update engine -->
- <circle class="bt-ring" cx="230" cy="111" r="24" fill="none" stroke="#7FE3FF" stroke-width="2"/>
- <circle cx="230" cy="111" r="24" fill="rgba(14,23,38,0.55)" stroke="rgba(255,255,255,0.75)" stroke-width="1.4"/>
- <text x="230" y="108" text-anchor="middle" font-size="11" font-weight="800" fill="#FFFFFF">EKF</text>
- <text x="230" y="121" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.8)">update</text>
- <line x1="206" y1="111" x2="150" y2="111" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
- <line x1="254" y1="111" x2="316" y2="111" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
- <!-- physical 18650 cell -->
- <ellipse class="bt-glow" cx="70" cy="112" rx="58" ry="82" fill="rgba(255,209,102,0.10)"/>
- <rect x="58" y="30" width="24" height="12" rx="3" fill="#DDE7F1" stroke="rgba(255,255,255,0.8)"/>
- <rect x="30" y="40" width="80" height="145" rx="14" fill="url(#btMetal)" stroke="rgba(255,255,255,0.85)" stroke-width="1.5"/>
- <rect x="42" y="56" width="56" height="113" rx="7" fill="rgba(11,61,145,0.45)"/>
- <rect class="bt-level" x="42" y="56" width="56" height="113" rx="7" fill="url(#btCharge)"/>
- <text x="70" y="118" text-anchor="middle" font-size="15" font-weight="900" fill="rgba(11,40,80,0.75)">+</text>
- <text x="70" y="200" text-anchor="middle" font-size="9.5" letter-spacing="1.4" font-weight="800" fill="#FFFFFF">PHYSICAL CELL</text>
- <!-- digital twin -->
- <rect x="362" y="30" width="24" height="12" rx="3" fill="none" stroke="#7FE3FF" stroke-width="1.4" stroke-dasharray="3 3"/>
- <rect x="350" y="40" width="80" height="145" rx="14" fill="rgba(127,227,255,0.10)" stroke="#7FE3FF" stroke-width="1.6" stroke-dasharray="6 4"/>
- <g stroke="rgba(127,227,255,0.22)" stroke-width="1">
-  <line x1="360" y1="70" x2="420" y2="70"/><line x1="360" y1="100" x2="420" y2="100"/>
-  <line x1="360" y1="130" x2="420" y2="130"/><line x1="360" y1="160" x2="420" y2="160"/>
-  <line x1="375" y1="55" x2="375" y2="172"/><line x1="395" y1="55" x2="395" y2="172"/><line x1="415" y1="55" x2="415" y2="172"/>
- </g>
- <polyline class="bt-draw" points="360,64 372,67 384,72 396,80 405,90 412,104 417,122 421,146" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round"/>
- <line x1="360" y1="140" x2="422" y2="140" stroke="#FF8A4C" stroke-width="1.4" stroke-dasharray="3 3"/>
- <rect class="bt-scan" x="352" y="50" width="76" height="3" rx="1.5" fill="rgba(127,227,255,0.9)"/>
- <text x="390" y="200" text-anchor="middle" font-size="9.5" letter-spacing="1.4" font-weight="800" fill="#FFFFFF">DIGITAL TWIN</text>
-</svg>
-<span class="bt-pkt bt-pkt-up" style="animation-delay:0s"></span>
-<span class="bt-pkt bt-pkt-up" style="animation-delay:0.7s"></span>
-<span class="bt-pkt bt-pkt-up" style="animation-delay:1.4s"></span>
-<span class="bt-pkt bt-pkt-up" style="animation-delay:2.1s"></span>
-<span class="bt-pkt bt-pkt-down" style="animation-delay:0.35s"></span>
-<span class="bt-pkt bt-pkt-down" style="animation-delay:1.75s"></span>
-</div>"""
-
 pills = "".join(f'<span class="bt-pill">{t}</span>' for t in
-                ("Self-updating EKF twin", "Mechanistic PINN", "Bayesian prognostics", "O&amp;M optimisation"))
-HERO_ART = re.sub(r"<!--.*?-->", "", HERO_ART)
-HERO_ART = " ".join(line.strip() for line in HERO_ART.splitlines())      # one line: no markdown code blocks
-HERO_CSS = " ".join(line.strip() for line in HERO_CSS.splitlines())
+                ("Health-indicator ranking", "LLI · LAM · CL modes", "Dual time-scale EKF twin",
+                 "Mechanistic PINN: SEI · plating · LAM", "Particle filter", "Semi-empirical law",
+                 "14-model ML workbench", "Conformal bands", "Integrated O&M optimisation"))
 st.markdown(
-    HERO_CSS +
-    '<div class="bt-hero"><div class="bt-hero-text">'
-    '<div class="bt-kicker">Self-updating digital twin · NASA Ames Li-ion data</div>'
-    '<div class="bt-title">🔋 Battery Digital Twin</div>'
-    '<div class="bt-sub">A physical cell and its virtual copy, synchronised cycle by cycle: diagnose ageing, '
-    'forecast remaining life and decide when to act.</div>'
-    f'<div>{pills}</div></div>' + HERO_ART + '</div>',
+    '<div class="bt-hero">'
+    '<div class="bt-kicker">Self-updating digital twin · NASA Ames Li-ion ageing data</div>'
+    '<div class="bt-title">🔋 Battery Digital Twin &amp; Operando Diagnostics</div>'
+    '<div class="bt-sub">NASA Ames 18650 LiCoO₂ / graphite ageing telemetry: incremental capacity analysis, '
+    'a 14-model ML workbench, a self-updating ECM twin and a mechanism-resolved physics-informed neural '
+    'network (SEI growth, lithium plating, loss of active material, Butler–Volmer kinetics), benchmarked '
+    'across batteries and forecast origins with calibrated uncertainty.</div>'
+    f'<div>{pills}</div></div>',
     unsafe_allow_html=True,
 )
 
@@ -2214,9 +1892,9 @@ def fade_explorer() -> None:
     """Multi-battery fade chart linked to multi-cycle raw telemetry."""
     all_cells = list(meta.index)
     c1, c2, c3, c4 = st.columns([3, 1.3, 1.6, 1.1])
-    cells = list(st.session_state.get("_diag_sel") or [cell])
-    c1.markdown(f"**{len(cells)} batter{'y' if len(cells) == 1 else 'ies'}** from the selection above"
-                + ("" if len(cells) <= 8 else " (whole fleet: click legend entries to hide cells)"))
+    cells = c1.multiselect("Batteries to compare", all_cells, default=[cell], max_selections=8, key="fade_cells",
+                           format_func=lambda c: cell_label(c, meta),
+                           help="Up to 8 batteries; each keeps the same colour in every chart.") or [cell]
     yvar = c2.radio("Metric", ["SOH", "Capacity_Ah"], key="fade_metric",
                     format_func=lambda v: "State of health" if v == "SOH" else "Capacity (Ah)")
     x_mode = c3.radio("x-axis", ["n", "Ah", "frac"], key="fade_x",
@@ -2411,9 +2089,6 @@ def stress_section() -> None:
     a = b = st.container()  # stacked full width
     with a:
         st.markdown("**Share of cycles exposed (%) per cell**")
-        sel_ = st.session_state.get("_diag_sel")
-        if sel_:
-            summ = summ[summ.index.isin(sel_)]
         show_table(summ.style.format("{:.0f}", subset=[c for c in summ.columns if c not in ("Max PRI",)])
                    .format("{:.2f}", subset=["Max PRI"]))
     with b:
@@ -2441,40 +2116,40 @@ def risk_banner(row: pd.Series, cell_id: str) -> None:
                 unsafe_allow_html=True)
 
 
-DIAG_SCOPES = ("single", "selected", "fleet")
-DIAG_SCOPE_LABEL = {"single": ":material/battery_full: Single battery",
-                    "selected": ":material/stacks: Selected batteries",
-                    "fleet": ":material/grid_view: Whole fleet"}
-
-
-def _pick_critical(fs: pd.DataFrame, k: int = 6) -> None:
-    st.session_state["diag_cells"] = list(fs.index[:k])
-    st.session_state["diag_scope"] = DIAG_SCOPE_LABEL["selected"]
-
-
-def battery_status_card(cid: str, fs: pd.DataFrame, lim: Dict[str, float], key: str) -> None:
-    """Alert banner, gauge cluster and key facts for one battery."""
-    if cid not in fs.index:
-        st.info(f"{cid}: not enough valid cycles for a status card.")
+def view_overview() -> None:
+    lim = asdict(te.SafetyLimits())
+    fs, ev = fleet_cached(ct, DATA_KEY, float(eol_ah), lim)
+    if fs.empty:
+        st.info("Not enough valid cycles to build the fleet overview.")
         return
-    row = fs.loc[cid]
-    risk_banner(row, cell_label(cid, meta))
-    show(fig_gauges(row, P, te.SafetyLimits(**lim)), key=f"gauges_{key}", export=False)
-    k = st.columns(5)
-    k[0].metric("Valid cycles", int(meta.loc[cid, "cycles"]))
-    k[1].metric("Initial capacity", fmt(meta.loc[cid, "C_bol_Ah"], ".3f", "Ah"))
-    k[2].metric("Capacity fade", fmt(meta.loc[cid, "fade_pct"], ".1f", "%"))
-    k[3].metric("Fade per 100 cycles", fmt(row["Fade per 100 cycles (%)"], ".2f", "%"))
-    k[4].metric("Regeneration events", int(meta.loc[cid].get("regen_events", 0) or 0))
+    section("Fleet at a glance")
+    k = st.columns(6)
+    k[0].metric("Batteries", len(fs))
+    k[1].metric("Mean SOH", fmt(100 * fs["SOH"].mean(), ".1f", "%"))
+    k[2].metric("Past end of life", int((fs["SOH"] <= fs["SOH_EOL"]).sum()))
+    k[3].metric("Critical / warning", f"{int((fs['Risk'] == 'Critical').sum())} / {int((fs['Risk'] == 'Warning').sum())}")
+    k[4].metric("Knees detected", int(fs["Knee"].sum()))
+    k[5].metric("Fleet cycles logged", f"{int(fs['Cycles'].sum()):,}")
 
+    section(f"Instrument cluster · {cell}")
+    if cell in fs.index:
+        row = fs.loc[cell]
+        risk_banner(row, cell)
+        show(fig_gauges(row, P, te.SafetyLimits(**lim)), key="gauges", export=False)
+        st.caption("Quick RUL is a robust linear trend of the last 20 cycles, for triage. The Models view gives the "
+                   "full probabilistic RUL from the twin, PINN and particle filter.")
 
-def triage_table(fs: pd.DataFrame, key: str) -> None:
+    section("Fleet health map")
+    show(fig_fleet_map(fs, P), key="fleet_map", data=fs.reset_index())
+
+    section("Risk triage")
+    show(fig_risk_matrix(fs, P, cell), key="risk_matrix", data=fs.reset_index())
     tbl = fs.reset_index()[["Cell_ID", "Risk", "SOH", "Health margin", "Quick RUL", "Fade per 100 cycles (%)",
                             "R growth (%)", "Peak T (°C)", "Cycles", "Ambient_C", "I_dis_A", "Alerts"]].copy()
     tbl["Risk"] = tbl["Risk"].map(lambda r: f"{RISK_ICON[r]} {r}")
     tbl["Quick RUL"] = tbl["Quick RUL"].replace(np.inf, np.nan)
     try:
-        st.dataframe(tbl, hide_index=True, use_container_width=True, height=min(640, 38 + 35 * len(tbl)), key=key,
+        st.dataframe(tbl, hide_index=True, use_container_width=True, height=min(640, 38 + 35 * len(tbl)),
                      column_config={
                          "Cell_ID": st.column_config.TextColumn("Battery", width="small"),
                          "SOH": st.column_config.ProgressColumn("SOH", min_value=0.0, max_value=1.05, format="%.3f"),
@@ -2490,269 +2165,82 @@ def triage_table(fs: pd.DataFrame, key: str) -> None:
     except Exception:
         show_table(tbl)
 
-
-def event_log(ev: pd.DataFrame, cells: Sequence[str], key: str) -> None:
-    c1, c2 = st.columns([3, 1])
-    sev = c1.multiselect("Severity", ["Critical", "Warning", "Watch", "Info"], default=["Critical", "Warning", "Watch"],
-                         key=f"{key}_sev")
-    evf = ev[ev["Severity"].isin(sev) & ev["Cell_ID"].isin(cells)]
-    c2.metric("Events shown", len(evf))
+    section("Event log")
+    sev = st.multiselect("Severity", ["Critical", "Warning", "Watch", "Info"], default=["Critical", "Warning", "Watch"],
+                         key="ev_sev")
+    only = st.toggle("Only the selected battery", value=False, key="ev_only")
+    evf = ev[ev["Severity"].isin(sev)]
+    if only:
+        evf = evf[evf["Cell_ID"] == cell]
     evf = evf.assign(Severity=evf["Severity"].map(lambda s_: {"Critical": "🔴", "Warning": "🟠", "Watch": "🟡",
                                                               "Info": "🔵"}[s_] + " " + s_))
-    if evf.empty:
-        st.success("No events of the chosen severity for this selection.")
-        return
     try:
-        st.dataframe(evf, hide_index=True, use_container_width=True, height=min(420, 38 + 35 * len(evf)), key=key,
+        st.dataframe(evf, hide_index=True, use_container_width=True, height=min(420, 38 + 35 * max(len(evf), 1)),
                      column_config={"Cell_ID": st.column_config.TextColumn("Battery"),
                                     "n": st.column_config.NumberColumn("Cycle", format="%d")})
     except Exception:
         show_table(evf)
 
-
-def selection_report(sel: Sequence[str], fs: pd.DataFrame, ev: pd.DataFrame, lim: Dict[str, float]) -> None:
-    label = sel[0] if len(sel) == 1 else f"{len(sel)} batteries"
-    if st.button(f"Build report · {label}", key="rep_go", icon=":material/description:", type="primary"):
+    section("Reports")
+    st.markdown("One-click, self-contained HTML report (interactive charts, opens in any browser; print to PDF "
+                "from the browser for a static copy).")
+    if st.button(f"Build report for {cell}", key="rep_go", icon=":material/description:", type="primary"):
         with st.spinner("Assembling report…"):
-            knees = {c: knee_cached(ct[ct["Cell_ID"] == c], DATA_KEY, c) for c in sel[:12]}
-            fs_sel = fs[fs.index.isin(sel)]
+            knees = {cell: knee_cached(ct_cell, DATA_KEY, cell)}
             secs: List[Tuple[str, Any]] = [
-                ("Selection", ", ".join(cell_label(c, meta) for c in sel)),
-                ("Status", fs_sel.drop(columns=["risk_level"])),
-                ("Capacity fade", fig_fade_compare(ct, meta, list(sel), "SOH", soh_eol if len(sel) == 1 else None, P,
-                                                   knees, len(sel) == 1, "n")),
-                ("Risk matrix (selection against the fleet)", fig_risk_matrix(fs, P, sel[0],
-                                                                              list(sel) if len(sel) < len(fs) else None)),
+                ("Summary", f"{cell_label(cell, meta)} · SOH {100 * fs.loc[cell, 'SOH']:.1f}% · risk "
+                            f"{fs.loc[cell, 'Risk']} · alerts: {fs.loc[cell, 'Alerts']}" if cell in fs.index else cell),
+                ("Instrument cluster", fig_gauges(fs.loc[cell], P, te.SafetyLimits(**lim))) if cell in fs.index
+                else ("Instrument cluster", "n/a"),
+                ("Capacity fade", fig_fade_compare(ct, meta, [cell], "SOH", soh_eol, P, knees, True, "n")),
+                ("Fleet risk matrix", fig_risk_matrix(fs, P, cell)),
+                ("Fleet status", fs.drop(columns=["risk_level"])),
+                ("Event log (this battery)", ev[ev["Cell_ID"] == cell]),
             ]
-            for c in sel[:8]:
-                if c in fs.index:
-                    secs.append((f"Instrument cluster · {c}", fig_gauges(fs.loc[c], P, te.SafetyLimits(**lim))))
-                    secs.append((f"Events · {c}", ev[ev["Cell_ID"] == c]))
-            saved = st.session_state.get("cmp")
-            if saved and saved.get("res") is not None and saved["res"].cell_id in sel:
-                try:
-                    secs.append((f"Forecasts · {saved['res'].cell_id}", fig_compare(saved["res"], P)))
-                    secs.append(("Forecast metrics", te.metrics_table(saved["res"].metrics)))
-                except Exception:
-                    pass
-            st.session_state["report"] = (tuple(sel), build_report_html(f"Battery health report · {label}", secs))
+            for key_, title in (("ml", "ML forecasts"), ("cmp", "Physics-informed comparison")):
+                saved = st.session_state.get(key_)
+                if saved and key_ == "ml" and saved.get("res") and saved["cfg"]["cell"] == cell:
+                    secs.append((title, fig_ml(saved["res"], ct_cell, saved["cfg"]["n0"], soh_eol, P)))
+                if saved and key_ == "cmp" and saved.get("res") is not None:
+                    try:
+                        secs.append((title, fig_compare(saved["res"], P)))
+                        secs.append(("Forecast metrics", te.metrics_table(saved["res"].metrics)))
+                    except Exception:
+                        pass
+            st.session_state["report"] = (cell, build_report_html(f"Battery health report · {cell}", secs))
     rep = st.session_state.get("report")
-    if rep and tuple(rep[0]) == tuple(sel):
-        download("Download report (HTML)", rep[1], f"battery_report_{label.replace(' ', '_')}.html", "text/html",
-                 key="rep_dl")
-
-
-def status_section(scope: str, sel: List[str], fs: pd.DataFrame, ev: pd.DataFrame, lim: Dict[str, float]) -> None:
-    """Health status for the current scope: instrument cards (single / selected) or triage (fleet)."""
-    if fs.empty:
-        st.info("Not enough valid cycles to assess health.")
-        return
-    if scope == "fleet":
-        k = st.columns(6)
-        k[0].metric("Batteries", len(fs))
-        k[1].metric("Mean SOH", fmt(100 * fs["SOH"].mean(), ".1f", "%"))
-        k[2].metric("Past end of life", int((fs["SOH"] <= fs["SOH_EOL"]).sum()))
-        k[3].metric("Critical / warning", f"{int((fs['Risk'] == 'Critical').sum())} / "
-                                          f"{int((fs['Risk'] == 'Warning').sum())}")
-        k[4].metric("Knees detected", int(fs["Knee"].sum()))
-        k[5].metric("Fleet cycles logged", f"{int(fs['Cycles'].sum()):,}")
-        show(fig_fleet_map(fs, P), key="fleet_map", data=fs.reset_index())
-        show(fig_risk_matrix(fs, P, cell), key="risk_matrix", data=fs.reset_index())
-        triage_table(fs, "triage_all")
-    else:
-        for c in sel:
-            battery_status_card(c, fs, lim, c)
-        if len(sel) > 1:
-            triage_table(fs[fs.index.isin(sel)], "triage_sel")
-        show(fig_risk_matrix(fs, P, sel[0], sel), key="risk_matrix", data=fs.reset_index())
-        st.caption("Selected batteries in colour, the rest of the fleet in grey. Quick RUL is a robust trend of the "
-                   "last 20 cycles for triage; the Models view gives the full probabilistic RUL.")
-    with st.expander("Event log", expanded=scope != "fleet", icon=":material/list_alt:"):
-        event_log(ev, sel, "ev")
-    with st.expander("Report", icon=":material/description:"):
-        st.caption("Self-contained HTML with interactive charts for the current selection (print to PDF from the "
-                   "browser).")
-        selection_report(sel if scope != "fleet" else list(fs.index[:8]), fs, ev, lim)
-
-
-def view_replay() -> None:
-    section(f"Live twin replay · {cell}")
-    st.markdown("The recorded life of the battery is streamed one discharge at a time. At every step the dual "
-                "time-scale EKF assimilates only the partial-window voltage and load-step resistance of the new "
-                "cycle, updates SOH, resistances and the personal degradation rate *k*, and re-forecasts the "
-                "remaining life. Nothing after the cursor is visible to the twin.")
-    level = 0.9
-    with st.spinner("Preparing the replay (runs the twin once, then animates)…"):
-        res, track = replay_cached(cell_frame(store, DATA_KEY, cell), ct, imp, DATA_KEY, cell, float(soh_eol), level)
-    pc = res.per_cycle
-    ns = pc["n"].astype(int).tolist()
-    if len(ns) < 6:
-        st.info("This battery has too few cycles for a replay.")
-        return
-    key_n, key_p = f"rp_n_{cell}", "rp_play"
-    st.session_state.setdefault(key_n, ns[min(5, len(ns) - 1)])
-    st.session_state.setdefault(key_p, False)
-    c = st.columns([1, 1, 1, 1, 1.4, 1.4, 1.4])
-    playing = bool(st.session_state[key_p])
-    if c[0].button("Pause" if playing else "Play", key="rp_toggle", type="primary",
-                   icon=":material/pause:" if playing else ":material/play_arrow:"):
-        st.session_state[key_p] = not playing
-        if not playing and st.session_state[key_n] >= ns[-1]:
-            st.session_state[key_n] = ns[5]
-        st.rerun()
-    if c[1].button("Step", key="rp_step", icon=":material/skip_next:"):
-        st.session_state[key_n] = min(ns[-1], st.session_state[key_n] + 1)
-    if c[2].button("Back", key="rp_back", icon=":material/skip_previous:"):
-        st.session_state[key_n] = max(ns[0], st.session_state[key_n] - 1)
-    if c[3].button("Reset", key="rp_reset", icon=":material/replay:"):
-        st.session_state[key_n] = ns[min(5, len(ns) - 1)]
-        st.session_state[key_p] = False
-    speed = c[4].select_slider("Cycles per frame", [1, 2, 3, 5, 10], value=2, key="rp_speed")
-    interval = c[5].select_slider("Frame interval (s)", [0.4, 0.7, 1.0, 1.5], value=0.7, key="rp_int")
-    reveal = c[6].toggle("Reveal future data", value=False, key="rp_reveal",
-                         help="Show the cycles the twin has not seen yet, to judge the forecast.")
-    good = ct_cell[~ct_cell["outlier"]]
-    eol_true = te.first_crossing(good["n"].to_numpy(), good["SOH"].to_numpy(), soh_eol, smooth=5)
-    n_max = int(max(pc["n"].max() * 1.35, (eol_true or 0) * 1.1))
-    frag = getattr(st, "fragment", None)
-
-    def frame() -> None:
-        if st.session_state.get(key_p):
-            nxt = st.session_state[key_n] + int(speed)
-            if nxt >= ns[-1]:
-                nxt, st.session_state[key_p] = ns[-1], False
-            st.session_state[key_n] = nxt
-        n = int(st.session_state[key_n])
-        n = min(ns, key=lambda v: abs(v - n))
-        row = pc[pc["n"] == n].iloc[0]
-        fc = te.twin_forecast(res, n, n_max, soh_eol, level) if n >= 5 else None
-        rs = fc.rul_samples[np.isfinite(fc.rul_samples)] if fc is not None and fc.rul_samples is not None else []
-        meas = good[good["n"] <= n]["SOH"].tail(1)
-        k = st.columns(6)
-        k[0].metric("Cycle", f"{n} / {ns[-1]}")
-        k[1].metric("Twin SOH", f"{row['SOH']:.3f}", delta=f"±{2 * row['SOH_std']:.3f} (2σ)", delta_color="off")
-        k[2].metric("Measured SOH", f"{float(meas.iloc[0]):.3f}" if len(meas) else "—")
-        k[3].metric("Personal k / prior", f"{row['k_ah'] / res.params.get('k_prior', row['k_ah']):.2f}×")
-        k[4].metric("Predicted RUL", f"{np.median(rs):.0f} cyc" if len(rs) else "beyond horizon",
-                    delta=(f"90%: {np.quantile(rs, 0.05):.0f}–{np.quantile(rs, 0.95):.0f}" if len(rs) else None),
-                    delta_color="off")
-        k[5].metric("NIS / dof", fmt(row.get("NIS_norm", float("nan")), ".2f"),
-                    help="Normalised innovation squared: about 1 when the filter's uncertainty is consistent.")
-        st.progress(min(1.0, (n - ns[0]) / max(ns[-1] - ns[0], 1)),
-                    text=f"{'▶ streaming' if st.session_state.get(key_p) else '⏸ paused'} · "
-                         f"{len(good[good['n'] <= n])} discharges assimilated")
-        show(fig_replay(ct_cell, pc, fc, n, soh_eol, P, reveal, n_max), key="rp_main", export=False)
-        show(fig_replay_track(track, pc, n, eol_true, P, n_max), key="rp_track", export=False)
-
-    if frag is not None:
-        try:
-            frag(run_every=f"{interval}s" if st.session_state.get(key_p) else None)(frame)()
-        except TypeError:
-            frame()
-    else:
-        frame()
-    st.caption("The EOL band narrowing and the personal rate k settling are the self-updating behaviour: the twin "
-               "starts from the population prior and converges on this battery's own ageing law as evidence "
-               "accumulates. Toggle 'Reveal future data' to judge each forecast against what actually happened.")
-
-
-@fragment
-def half_cell_section() -> None:
-    st.markdown("The ICA/DVA proxies above become quantitative here. The pseudo-OCV (discharge voltage + |I|·R_dc) is "
-                "fitted with literature half-cell potentials. Four parameters describe the electrode balance: positive "
-                "and negative capacities C_p and C_n, and their stoichiometries y₀ (LiᵧCoO₂) and x₀ (LiₓC₆) at the top of "
-                "charge. A fifth, η, absorbs the residual polarisation. Their evolution separates loss of lithium "
-                "inventory from loss of active material on each electrode.")
-    with st.expander("Model equations", icon=":material/functions:"):
-        st.latex(r"V(Q) = U_\mathrm{p}\!\left(y_0 + \tfrac{Q}{C_\mathrm{p}}\right) - "
-                 r"U_\mathrm{n}\!\left(x_0 - \tfrac{Q}{C_\mathrm{n}}\right) - \eta")
-        st.latex(r"\mathrm{LAM_{PE}} = 1 - \frac{C_\mathrm{p}}{C_\mathrm{p,0}},\quad "
-                 r"\mathrm{LAM_{NE}} = 1 - \frac{C_\mathrm{n}}{C_\mathrm{n,0}},\quad "
-                 r"\mathrm{LLI} = 1 - \frac{x_0 C_\mathrm{n} + y_0 C_\mathrm{p}}{(x_0 C_\mathrm{n} + y_0 C_\mathrm{p})_0}")
-        st.caption("U_p: LiCoO₂ (Ramadass et al., J. Electrochem. Soc. 151, 2004). U_n: graphite (Doyle et al., "
-                   "J. Electrochem. Soc. 143, 1996). Global search (differential evolution) for the first curve, then "
-                   "warm-started local fits (Dubarry et al. 2012; Birkl et al. 2017). On synthetic truth the method "
-                   "recovers LLI and LAM_PE within about 1 percentage point.")
-    c1, c2 = st.columns(2)
-    n_curves = c1.slider("Curves across life", 3, 12, 6, key="hc_n")
-    ir = c2.toggle("IR-compensate", value=True, key="hc_ir")
-    if st.button("Fit half-cell model", key="hc_go", icon=":material/science:", type="primary"):
-        with st.spinner("Fitting electrode balance (global search on the first curve)…"):
-            try:
-                st.session_state["hc"] = (cell, half_cell_cached(prepared_cell(store, DATA_KEY, cell), ct_cell, DATA_KEY,
-                                                                 cell, n_curves, ir))
-            except Exception as exc:
-                report_error("Half-cell fit failed", exc, debug)
-    saved = st.session_state.get("hc")
-    if not saved or saved[0] != cell:
-        return
-    tab, fits = saved[1]
-    if not fits:
-        st.warning("No curve could be fitted for this battery.")
-        return
-    last = tab.iloc[-1]
-    k = st.columns(4)
-    k[0].metric("Loss of lithium inventory", fmt(last["LLI (%)"], ".1f", "%"))
-    k[1].metric("LAM positive (LiCoO₂)", fmt(last["LAM_PE (%)"], ".1f", "%"))
-    k[2].metric("LAM negative (graphite)", fmt(last["LAM_NE (%)"], ".1f", "%"))
-    k[3].metric("Median fit RMSE", fmt(tab["Fit RMSE (mV)"].median(), ".1f", "mV"))
-    show(fig_half_cell_modes(tab, P), key="hc_modes", data=tab)
-    show(fig_half_cell_fits([fits[0], fits[len(fits) // 2], fits[-1]] if len(fits) > 2 else fits, P), key="hc_fits",
-         export=False)
-    show_table(tab.set_index("n").style.format("{:.3f}"))
-    dom = max(("LLI (%)", "LAM_PE (%)", "LAM_NE (%)"), key=lambda c_: last[c_])
-    card("Reading", [f"Dominant mode at n = {int(last['n'])}: {dom.split(' ')[0]}. LLI points to SEI growth or "
-                     "plating; LAM_PE to cathode cracking or cobalt dissolution; LAM_NE to graphite exfoliation or "
-                     "particle isolation.",
-                     "At ~1C the pseudo-OCV still carries kinetic and diffusion overpotentials. Residuals above "
-                     "~15 mV or η drifting strongly mean the absolute split is uncertain: compare trends between cells "
-                     "rather than trusting single values."])
+    if rep and rep[0] == cell:
+        download("Download report (HTML)", rep[1], f"battery_report_{cell}.html", "text/html", key="rep_dl")
 
 
 def view_data() -> None:
-    global cell, ct_cell, eis_cell, c_bol, soh_eol
-    lim = asdict(te.SafetyLimits())
-    fs, ev = fleet_cached(ct, DATA_KEY, float(eol_ah), lim)
-    all_cells = list(meta.index)
-    labels = [DIAG_SCOPE_LABEL[k] for k in DIAG_SCOPES]
-    st.session_state.setdefault("diag_scope", labels[0])
-    c1, c2 = st.columns([3, 1.2], vertical_alignment="bottom")
-    with c1:
-        try:
-            choice = st.segmented_control("Scope", labels, key="diag_scope", label_visibility="collapsed")
-        except Exception:
-            choice = st.radio("Scope", labels, key="diag_scope", horizontal=True, label_visibility="collapsed")
-    choice = choice or labels[0]
-    scope = DIAG_SCOPES[labels.index(choice)]
-    c2.button("Select most critical", key="pick_crit", icon=":material/priority_high:", on_click=_pick_critical,
-              args=(fs,), help="Switches to 'Selected batteries' with the six highest-risk cells.")
-    if scope == "single":
-        sel = [cell]
-        st.caption(f"Analysing the target battery from the control bar: **{cell_label(cell, meta)}**.")
-    elif scope == "selected":
-        st.session_state.setdefault("diag_cells", [cell])
-        sel = st.multiselect("Batteries", all_cells, key="diag_cells", max_selections=8,
-                             format_func=lambda c: cell_label(c, meta),
-                             help="Up to 8 batteries; every section below follows this selection.") or [cell]
-    else:
-        sel = all_cells
-    st.session_state["_diag_sel"] = sel
+    k = st.columns(6)
+    k[0].metric("Target cell", cell)
+    k[1].metric("Initial capacity", fmt(c_bol, ".3f", "Ah"))
+    k[2].metric("Valid discharge cycles", int(meta.loc[cell, "cycles"]))
+    k[3].metric("Capacity fade", fmt(meta.loc[cell, "fade_pct"], ".1f", "%"))
+    k[4].metric("Ambient / discharge current",
+                f"{fmt(meta.loc[cell, 'Ambient_C'], '.0f', '°C')} / {fmt(meta.loc[cell, 'I_dis_A'], '.1f', 'A')}")
+    k[5].metric("Regeneration events", int(meta.loc[cell].get("regen_events", 0) or 0),
+                help="Upward capacity jumps (> 1 % of initial) after rest periods; kept in the data and "
+                     "marked ▲ on the fade chart.")
 
-    section("Health status")
-    status_section(scope, sel, fs, ev, lim)
-
-    bad = {c: e for c, e in cell_errors.items()}
-    with st.expander(f"Data quality · {len(bad)} skipped cell(s)", icon=":material/fact_check:"):
-        for c in sel[:8]:
-            issues = validation_cached(store, DATA_KEY, c)
-            n_out = int(ct[(ct["Cell_ID"] == c)]["outlier"].sum())
-            (st.warning if issues else st.success)(
-                f"{c}: {len(issues)} telemetry issue(s), {n_out} excluded cycle(s)"
-                + ("" if not issues else " · " + "; ".join(issues[:3])))
-        if len(sel) > 8:
-            st.caption("Per-cell checks are listed for the first eight batteries.")
-        if bad:
-            show_table(pd.DataFrame({"Cell": list(bad), "Reason": list(bad.values())}).set_index("Cell"))
+    kn = knee_cached(ct_cell, DATA_KEY, cell)
+    if kn.get("found"):
+        st.caption(f"Knee point detected at n = {kn['knee_n']} (SOH {kn['soh_at_knee']:.3f}): fade accelerates "
+                   f"{kn['ratio']:.1f}× (F-test p = {kn['p_value']:.1g}). Marked ★ on the fade chart; beyond it the "
+                   "risk of sudden capacity loss rises, which the maintenance optimiser accounts for.")
+    issues = validation_cached(store, DATA_KEY, cell)
+    n_out = int(ct_cell["outlier"].sum())
+    with st.expander(f"Data quality: {len(issues)} telemetry issue(s), {n_out} outlier cycle(s), "
+                     f"{len(cell_errors)} skipped cell(s)", expanded=bool(issues)):
+        if issues:
+            for msg in issues:
+                st.warning(msg)
+        else:
+            st.success("Schema, physical ranges and time ordering passed for this cell.")
+        if cell_errors:
+            show_table(pd.DataFrame({"Cell": list(cell_errors), "Reason": list(cell_errors.values())}).set_index("Cell"))
 
     section("Capacity fade: compare batteries")
     fade_explorer()
@@ -2760,25 +2248,11 @@ def view_data() -> None:
     section("Cohort by ambient temperature")
     norm_x = st.toggle("Normalise x to fraction of recorded life", value=False, key="grid_norm",
                        help="Aligns cells with very different cycle counts.")
-    grid_sel = sel if scope != "fleet" else [cell]
-    show(fig_cohort_grid(ct, meta, grid_sel, P, norm_x), key="cohort_grid",
+    show(fig_cohort_grid(ct, meta, cell, P, norm_x), key="cohort_grid",
          data=ct.loc[~ct["outlier"], ["Cell_ID", "n", "SOH"]].merge(
              meta[["Ambient_C", "I_dis_A"]].reset_index(), on="Cell_ID"))
     with st.expander("Mission 1 · How do operating conditions influence degradation?", expanded=False):
         condition_effects_section()
-
-    if len(sel) > 1:
-        st.markdown("---")
-        focus = st.selectbox("Focus battery for the detailed analyses below", sel,
-                             index=sel.index(cell) if cell in sel else 0, key="diag_focus",
-                             format_func=lambda c: cell_label(c, meta),
-                             help="Indicator trajectories, ICA / DVA, degradation modes, half-cell fitting and the "
-                                  "stress timeline analyse one battery at a time.")
-        cell = focus
-        ct_cell = ct[ct["Cell_ID"] == cell].sort_values("n")
-        eis_cell = te.valid_eis(imp, cell)
-        c_bol = float(meta.loc[cell, "C_bol_Ah"])
-        soh_eol = te.soh_eol_for(c_bol, eol_ah)
 
     section("Mission 1 · Which parameter best represents health?")
     health_indicator_section()
@@ -2788,9 +2262,6 @@ def view_data() -> None:
 
     section("Degradation modes: LLI · LAM · conductivity loss")
     modes_section()
-
-    section("Quantitative mode analysis: half-cell OCV fitting")
-    half_cell_section()
 
     section("Operating stress and safety exposure")
     stress_section()
@@ -2828,18 +2299,10 @@ def methods_panel() -> None:
                     "ridge prior on the exponent:")
         st.latex(r"\mathrm{SOH} = 1 - B(T, I)\,\mathrm{Ah}^{z},\qquad z \approx 0.5\ \text{(SEI, diffusion-limited)},"
                  r"\quad z \approx 1\ \text{(linear)},\quad z > 1\ \text{(accelerating)}")
-        st.markdown("**Hierarchical Bayes** (partial pooling): every cell has its own power-law parameters, drawn "
-                    "from a fleet distribution whose mean depends on the operating conditions. The fleet is the prior "
-                    "and the battery's own data update it (Laplace posterior):")
-        st.latex(r"\mathrm{SOH} = s_0\left[1 - e^{a}\left(\tfrac{\mathrm{Ah}}{100}\right)^{z}\right],\qquad "
-                 r"(a, z)_c \sim \mathcal{N}\!\left(G\,x_c,\ \Sigma\right),\quad x_c = \left[1,\ \tfrac{1}{T_\mathrm{ref}} - "
-                 r"\tfrac{1}{T_c},\ \ln\tfrac{I_c}{2\,\mathrm{A}}\right]")
-        st.markdown("**Particle filter** on the same physics law with the hierarchical prior (Student-t likelihood, "
-                    "systematic resampling); **physics-mean GP**: hierarchical-Bayes trend plus a GP residual in "
-                    "throughput; **stacked ensemble** weighted by backtest skill on the battery's own history:")
-        st.latex(r"w_k^{(i)} \propto w_{k-1}^{(i)}\,p\!\left(y_k \mid \theta^{(i)}\right),\qquad "
-                 r"\mathrm{SOH}(\mathrm{Ah}) = m_\theta(\mathrm{Ah}) + f(\mathrm{Ah}),\ f \sim \mathcal{GP}(0, k_\mathrm{RBF}),"
-                 r"\qquad \hat y = \sum_i \frac{\mathrm{RMSE}_i^{-2}}{\sum_j \mathrm{RMSE}_j^{-2}}\,\hat y_i")
+        st.markdown("**Particle filter** (Saha & Goebel 2009) on the double-exponential capacity model, prior from "
+                    "cohort fits, Student-t likelihood, systematic resampling:")
+        st.latex(r"\mathrm{SOH}(n) = a\,e^{b n} + c\,e^{d n},\qquad w_k^{(i)} \propto w_{k-1}^{(i)}\,"
+                 r"p\!\left(y_k \mid \theta^{(i)}\right)")
         st.markdown("**Health-indicator ranking** (Coble & Hines 2009): monotonicity, trendability, prognosability "
                     "and |Spearman ρ| with SOH on beginning-of-life-normalised indicators, plus a leave-one-cell-out "
                     "test; PCA decides whether one parameter suffices. **Degradation modes**: LLI / LAM / CL proxies "
@@ -2857,10 +2320,7 @@ def methods_panel() -> None:
             "| Equivalent-circuit | 1-RC ECM inside the dual EKF twin and the operations plant |\n"
             "| Electrochemical / physics-based | Butler–Volmer and SEI-type fade law in the hybrid PINN |\n"
             "| Data-driven | RF, GBR, GPR, SVR, MLP, Ridge fade-rate models with conformal bands |\n"
-            "| Bayesian filtering / inference | Dual EKF (states + rate); particle filter and hierarchical "
-            "Bayes on the physics power law; physics-mean GP |\n"
-            "| Early-life data-driven | ΔQ(V) elastic net (Severson et al. 2019) |\n"
-            "| Model combination | Skill-weighted stacked ensemble |")
+            "| Bayesian filtering | Dual EKF (states + rate), particle filter |")
         st.markdown("**Metrics.** RMSE on held-out cycles; RUL from the origin with right-censoring; relative "
                     "accuracy, α-λ and prognostic horizon after Saxena et al.; empirical band coverage.")
         st.markdown(
@@ -2923,11 +2383,12 @@ R2_NOTE = ("**Reading the scores.** *Accuracy* = 100 × (1 − mean absolute per
 
 def ml_section() -> None:
     section("Machine-learning workbench", icon=":material/model_training:")
-    st.markdown("Two tasks, 8 curated models, every hyperparameter adjustable. **Forecast**: predict future SOH from the past "
+    st.markdown("Two tasks, 14 models, every hyperparameter adjustable. **Forecast**: predict future SOH from the past "
                 "(prognosis). **Estimate**: infer the present SOH from operando indicators measured on the same cycle "
                 "(diagnosis, no capacity test needed).")
-    models = st.multiselect("Models", list(te.ML_MODELS), default=["Extra Trees", "Hist. Gradient Boosting",
-                                                                    "Gaussian Process", "Bayesian Ridge"],
+    models = st.multiselect("Models", list(te.ML_MODELS), default=["Random Forest", "Extra Trees", "Gradient Boosting",
+                                                                    "Hist. Gradient Boosting", "Gaussian Process",
+                                                                    "Ridge"],
                             key="ml_models", help="Select any number; the leaderboard ranks them.")
     params = hyperparam_editor(models, "hp")
     t_fc, t_est = st.tabs([":material/trending_down: Forecast future SOH", ":material/biotech: Estimate SOH from indicators"])
@@ -2958,8 +2419,11 @@ def ml_forecast_tab(models: Sequence[str], params: Dict[str, Dict[str, Any]]) ->
         train_cells = tuple(st.multiselect("Train on these batteries", others, default=[c for c in near if c in others],
                                            key="ml_train_cells", format_func=lambda c: cell_label(c, meta)))
     d1, d2, d3 = st.columns(3)
-    strategy = "increment"
-    d1.markdown("**Fade-rate model**  \n*dSOH/dn = g(SOH, conditions, early-life features)*, integrated forward")
+    strategy = d1.selectbox("Strategy", list(te.ML_STRATEGIES), key="ml_strategy",
+                            format_func=lambda s: "Fade-rate model (increment)" if s == "increment"
+                            else "Direct SOH(n) regression (legacy)",
+                            help="The increment strategy learns dSOH/dn as a function of SOH, so tree models "
+                                 "keep extrapolating beyond the longest training life.")
     conf = d2.slider("Conformal calibration cells (0 = no band)", 0, 8, 3, key="ml_conf")
     level = d3.select_slider("Band level", [0.8, 0.9, 0.95], value=0.9, key="ml_level")
     use_pop = source == "cohort"
@@ -3175,7 +2639,9 @@ def physics_section() -> None:
         h1, h2 = st.columns(2, gap="large")
         with h1:
             st.markdown("**ECM twin observer**")
-            observer = "dual"
+            observer = st.radio("Observer", ["dual", "joint"], horizontal=True,
+                                format_func=lambda o: "Dual time-scale (per cycle, fast)" if o == "dual"
+                                else "Joint EKF (per sample, slow)")
             if observer == "dual":
                 use_cap = st.toggle("Use full-discharge capacity measurements", value=False,
                                     help="Off = operando setting: only partial-window voltage and load-step "
@@ -3247,35 +2713,18 @@ def physics_section() -> None:
     ml_pick = c2.selectbox("ML reference model", list(te.ML_MODELS), index=1)
     level = c3.select_slider("Band level", [0.8, 0.9, 0.95], value=0.9, key="cmp_level")
     reuse = c4.toggle("Reuse cached observer run", value=True)
-    st.markdown("**Paradigms to compare**")
-    d = st.columns(4)
-    use_semi = d[0].toggle("Semi-empirical law", value=True,
-                           help="SOH = s0[1 − B·Ah^z] (Wang et al. 2011) with a cohort prior on z.")
-    use_hb = d[1].toggle("Hierarchical Bayes", value=True,
-                         help="Partial pooling: the fleet (with temperature and current covariates) is the prior, "
-                              "this battery's data update it.")
-    use_pf = d[2].toggle("Particle filter", value=True,
-                         help="Sequential Monte Carlo on the physics power law with the hierarchical prior.")
-    use_gp = d[3].toggle("Physics-mean GP", value=True,
-                         help="Hierarchical-Bayes trend + Gaussian-process residual.")
-    e_ = st.columns(4)
-    use_ens = e_[0].toggle("Stacked ensemble", value=True,
-                           help="Skill-weighted combination (weights from a backtest on this battery's own history).")
-    run_pinn = e_[1].toggle("Hybrid PINN", value=True, help="Switch off for a fast comparison (the PINN takes seconds).")
-    hc = st.session_state.get("hc")
-    has_modes = bool(hc and hc[0] == cell and len(hc[1][0]))
-    use_modes = e_[2].toggle("Constrain PINN with half-cell modes", value=has_modes, disabled=not has_modes,
-                             help="Uses the LLI / LAM fitted in Data › half-cell OCV fitting (cycles ≤ n₀ only). "
-                                  "Run that fit first for this battery.")
-    extra = tuple(k for k, on in (("semi", use_semi), ("pf", use_pf), ("hb", use_hb), ("gp", use_gp),
-                                  ("ens", use_ens)) if on)
-    mode_targets = hc[1][0] if (use_modes and has_modes) else None
+    d1, d2, d3 = st.columns(3)
+    use_semi = d1.toggle("Semi-empirical power law", value=True,
+                         help="Q_loss = B·Ah^z (Wang et al. 2011) with a cohort prior on z; Monte-Carlo band.")
+    use_pf = d2.toggle("Particle filter (double exponential)", value=True,
+                       help="Saha & Goebel (2009) capacity model; population prior, sequential Bayesian update.")
+    run_pinn = d3.toggle("Hybrid PINN", value=True, help="Switch off for a fast comparison (the PINN takes seconds).")
+    extra = tuple(k for k, on in (("semi", use_semi), ("pf", use_pf)) if on)
     obs_key = (DATA_KEY, cell, observer, tuple(sorted(asdict(twin_params).items())),
                tuple(sorted(asdict(dual_cfg).items())))
     cmp_cfg = dict(cell=cell, observer=observer, frac=frac2, ml_model=ml_pick, band_level=level,
                    eol_ah=float(eol_ah), twin=asdict(twin_params), dual=asdict(dual_cfg), pinn=asdict(pinn_cfg),
-                   pinn_seeds=list(range(members)), extra=list(extra), run_pinn=run_pinn,
-                   pinn_modes=mode_targets is not None)
+                   pinn_seeds=list(range(members)), extra=list(extra), run_pinn=run_pinn)
 
     if st.button("Run benchmark on this cell", type="primary", key="cmp_go"):
         bar = st.progress(0.0, text="Initialising observer…")
@@ -3286,8 +2735,7 @@ def physics_section() -> None:
             res_new = te.compare_paradigms(raw, ct, imp, cell, frac2, twin_params, pinn_cfg, ml_pick, eol_ah,
                                            ekf=ekf_res, progress=lambda f, m: bar.progress(f, text=m),
                                            observer=observer, dual_cfg=dual_cfg, band_level=level,
-                                           pinn_seeds=tuple(range(members)), extra=extra, run_pinn=run_pinn,
-                                           mode_targets=mode_targets)
+                                           pinn_seeds=tuple(range(members)), extra=extra, run_pinn=run_pinn)
             if res_new.ekf is not None:
                 st.session_state["ekf"] = {"key": obs_key, "res": res_new.ekf}
             st.session_state["cmp"] = {"cfg": cmp_cfg, "res": res_new}
@@ -3349,15 +2797,6 @@ def physics_section() -> None:
             q = pr[te.PF_NAME].params
             lines.append(f"Particle filter: prior from {q['prior_cells']} cohort fits, {q['n_particles']} particles, "
                          f"{q['resampling_steps']} resampling steps")
-        if te.HB_NAME in pr:
-            q = pr[te.HB_NAME].params
-            lines.append(f"Hierarchical Bayes: z = {q['z']:.2f} (fleet prior {q['prior_z']:.2f}); the forecast still "
-                         f"leans {100 * q['prior_weight']:.0f}% on the fleet prior ({q['population_cells']} cells"
-                         f"{', temperature/current covariates' if q['covariates'] else ''})")
-        if te.ENS_NAME in pr:
-            wts = pr[te.ENS_NAME].params["weights"]
-            lines.append("Ensemble weights (backtest skill): " + ", ".join(f"{k.split(' · ')[0]} {v:.2f}"
-                                                                           for k, v in wts.items()))
         if lines:
             card("Prognostic model parameters", lines)
     with b:
@@ -3492,11 +2931,10 @@ def cross_cell_section() -> None:
         sel = c1.multiselect("Cells", pool, default=pool[: min(6, len(pool))], key="bench_cells")
         fracs = c2.multiselect("Origins (fraction of life)", [0.2, 0.3, 0.4, 0.5, 0.6, 0.7], default=[0.3, 0.5],
                                key="bench_fracs")
-        pars = c3.multiselect("Paradigms", list(te.BENCH_PARADIGMS), default=["ML", "Twin", "HB", "PF"],
+        pars = c3.multiselect("Paradigms", list(te.BENCH_PARADIGMS), default=["ML", "Twin", "SemiEmp", "PF"],
                               key="bench_pars", format_func={"ML": "ML surrogate", "Twin": "ECM twin (dual EKF)",
                                                              "PINN": "Hybrid PINN", "SemiEmp": "Semi-empirical",
-                                                             "PF": "Particle filter", "HB": "Hierarchical Bayes",
-                                                             "GP": "Physics-mean GP"}.get,
+                                                             "PF": "Particle filter"}.get,
                               help="The PINN adds ~seconds per cell and origin.")
         cfg = te.BenchmarkConfig(fracs=tuple(sorted(fracs)) or (0.4,), paradigms=tuple(pars) or ("Twin",),
                                  eol_ah=float(eol_ah), pinn_epochs=500, conformal_cells=3)
@@ -3585,39 +3023,9 @@ def update_frequency_section() -> None:
         manifest_button(cfg, "update_frequency", DATA_KEY)
 
 
-def early_life_section() -> None:
-    section("Early-life lifetime prediction from ΔQ(V)")
-    st.markdown("Severson et al. (*Nature Energy* 4, 2019) showed that the variance of ΔQ(V), the change of the "
-                "discharge curve between an early and a slightly later cycle, predicts cycle life long before capacity "
-                "fades visibly. Here the same idea is applied to your cohort, with a leave-one-cell-out elastic net. "
-                "The ΔQ(V) statistics also feed the ML fade-rate models as early-life descriptors.")
-    c1, c2 = st.columns(2)
-    n_a = c1.slider("Reference cycle", 1, 10, 2, key="el_a")
-    n_b = c2.slider("Comparison cycle (early window end)", n_a + 5, 80, max(n_a + 5, 20), key="el_b")
-    el = early_life_cached(ct, DATA_KEY, float(eol_ah), int(n_a), int(n_b))
-    if el["table"].empty:
-        st.info("Not enough cells with this many cycles.")
-        return
-    show(fig_dq_curves(ct, el, P), key="el_dq", data=el["table"])
-    if not el["available"]:
-        st.info("Fewer than five cells reached end of life with usable ΔQ(V): the lifetime regression is not "
-                "available (lower the end-of-life capacity in the control bar to include more cells).")
-        return
-    k = st.columns(4)
-    k[0].metric("Cells with known life", el["n_cells"])
-    k[1].metric("corr(log var ΔQ, log life)", fmt(el["corr_logvar_loglife"], ".2f"))
-    k[2].metric("LOCO lifetime error", fmt(el["mape_pct"], ".1f", "%"))
-    k[3].metric("Cohort-mean baseline", fmt(el["baseline_mape_pct"], ".1f", "%"))
-    show(fig_lifetime_parity(el, P, list(meta.index)), key="el_parity", data=el["loco"])
-    st.caption("NASA cells live 40–200 cycles and the cohort mixes temperatures, currents and cut-offs. The early "
-               "window is therefore much shorter than Severson's (cycle 10 → 100), and the elastic net also sees the "
-               "operating conditions. A strongly negative correlation means ΔQ(V) carries lifetime information.")
-
-
 def view_models() -> None:
     methods_panel()
     ml_section()
-    early_life_section()
     physics_section()
     ablation_section()
     update_frequency_section()
@@ -3760,62 +3168,7 @@ def view_ops() -> None:
         manifest_button(mm["cfg"], "mismatch", DATA_KEY)
 
     integrated_section(econ, phys, plant, float(amb_mean), float(amb_amp), ops_cfg)
-    dp_section(econ, phys, plant, float(amb_mean), float(amb_amp))
     scenario_section()
-
-
-def dp_section(econ: te.Economics, phys: te.CellPhysics, plant: Optional[te.CellPhysics], amb_mean: float,
-               amb_amp: float) -> None:
-    section("Optimal operation and replacement by dynamic programming")
-    st.markdown("The twin-aware policy above is one-step (greedy). Here the full sequential problem is solved as a "
-                "semi-Markov decision process. State: (SOH, season phase). Actions: discharge current or replace. "
-                "The objective is the true long-run profit rate, including the sudden-failure hazard, energy cost "
-                "and downtime. Dinkelbach's method finds the rate ρ* at which a new cell is exactly worth its "
-                "renewal. The DP policy is then run in closed loop, with observer noise and any plant mismatch set "
-                "above, and scored exactly like the grid study.")
-    with st.expander("Bellman equation", icon=":material/functions:"):
-        st.latex(r"W_\rho(s, j) = \max\Big\{-C_\mathrm{plan} - \rho\,t_\mathrm{plan},\;\max_I\big[r_I - \rho\,t_I "
-                 r"+ h(s)\,(-C_\mathrm{unpl} - \rho\,t_\mathrm{unpl}) + (1 - h(s))\,\mathbb{E}\,W_\rho(s - \Delta s_I, j')"
-                 r"\big]\Big\},\qquad \rho^*:\ W_{\rho^*}(1, j_0) = 0")
-    saved_om = st.session_state.get("om")
-    maint = saved_om["cfg"]["maint"] if saved_om else asdict(te.MaintenanceModel(replacement_cost=econ.replacement_cost))
-    c1, c2 = st.columns(2)
-    n_soh = c1.select_slider("SOH grid points", [50, 70, 90, 120], value=90, key="dp_ns")
-    n_ph = c2.select_slider("Season bins", [8, 12, 16, 24], value=16, key="dp_nph")
-    if st.button(f"Solve DP (≈ {4 + n_soh * n_ph // 150} s)", key="dp_go", icon=":material/account_tree:", type="primary"):
-        with st.spinner("Tabulating cycle outcomes and running value iteration…"):
-            try:
-                dp = dp_cached(asdict(econ), asdict(phys), maint, amb_mean, amb_amp, int(n_soh), int(n_ph))
-                ev, life = te.evaluate_dp_policy(dp, econ, phys, te.MaintenanceModel(**maint), plant=plant,
-                                                 ambient_mean_C=amb_mean, ambient_amp_C=amb_amp)
-                st.session_state["dp"] = {"dp": dp, "eval": ev, "life": life}
-            except Exception as exc:
-                report_error("Dynamic programming failed", exc, debug)
-    saved = st.session_state.get("dp")
-    if not saved:
-        return
-    dp, ev = saved["dp"], saved["eval"]
-    k = st.columns(5)
-    k[0].metric("Model-optimal rate ρ*", fmt(dp.rho, ".4f", "CU/h"), help="Upper bound under the DP's model.")
-    k[1].metric("Closed-loop rate", fmt(ev["rate"], ".4f", "CU/h"))
-    k[2].metric("Replaced at SOH", fmt(ev["threshold"], ".3f"))
-    k[3].metric("P(sudden failure)", fmt(100 * ev["p_failure"], ".1f", "%"))
-    k[4].metric("Violations", int(ev["violations"]))
-    show(fig_dp_policy(dp, P), key="dp_fig", data=pd.DataFrame(dp.action, index=dp.soh_grid, columns=dp.phases))
-    if saved_om:
-        opt = te.integrated_optimum(saved_om["study"])
-        b = opt.get("best")
-        if b:
-            gap = 100 * (ev["rate"] - b["rate"]) / abs(b["rate"])
-            card("DP versus the best grid policy", [
-                f"Grid optimum: {b['policy']}, replace at {b['threshold']:.2f} → {b['rate']:.4f} CU/h; "
-                f"DP closed loop {ev['rate']:.4f} CU/h ({gap:+.1f}%).",
-                f"The simple policy reaches {100 * b['rate'] / dp.rho:.0f}% of the model optimum ρ*. When the gap is "
-                "small, the one-step policy plus a replacement threshold is already near-optimal for this plant. "
-                "The DP adds a certificate of that, plus a season-dependent replacement boundary."])
-    else:
-        st.caption("Run the integrated optimisation above to compare the DP with the best grid policy.")
-
 
 
 def scenario_section() -> None:
@@ -3953,7 +3306,7 @@ def integrated_section(econ: te.Economics, phys: te.CellPhysics, plant: Optional
 # =============================================================================
 # Dispatch: only the active view runs
 # =============================================================================
-_VIEW_FN: Dict[str, Callable[[], None]] = {VIEWS[0]: view_data, VIEWS[1]: view_replay, VIEWS[2]: view_models,
+_VIEW_FN: Dict[str, Callable[[], None]] = {VIEWS[0]: view_overview, VIEWS[1]: view_data, VIEWS[2]: view_models,
                                            VIEWS[3]: view_ops}
 try:
     _VIEW_FN.get(view, view_data)()

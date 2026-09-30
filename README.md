@@ -1,4 +1,4 @@
-# Battery digital twin & operando diagnostics (v4.6)
+# Battery digital twin & operando diagnostics (v4.3)
 
 ```bash
 pip install -r requirements.txt
@@ -10,40 +10,17 @@ docker build -t battery-twin . && docker run -p 8501:8501 -v twin-data:/data bat
 ```
 
 Files: `twin_engine.py` (all computation, no UI), `app.py` (Streamlit views), `benchmark.py`
-(offline sweep → results file the app can load), `tests/` (50 tests incl. gradient checks and
+(offline sweep → results file the app can load), `tests/` (43 tests incl. gradient checks and
 synthetic-truth recovery). Set `TWIN_CACHE_DIR` to persist downloads and uploads; `GIT_COMMIT`
 is recorded in run manifests.
 
-## Diagnostics (first view)
+## Operations centre (first view)
 
-One view, one selection. A scope switch chooses **Single battery**, **Selected batteries** (up to 8, or
-"Select most critical" from the fleet ranking) or **Whole fleet**. The health status adapts: instrument
-cards (SOH, quick RUL, resistance growth and peak-temperature gauges with alert banner) per battery, or the
-fleet treemap and triage table. The risk matrix always shows the selection against the grey fleet. Every
-section below (fade comparison, raw telemetry, cohort grid, health indicators, ICA/DVA, degradation modes,
-half-cell fitting, stress exposure, event log, HTML report) follows the same selection; single-battery
-analyses use a "focus battery" chosen from the selection.
-
-## New in v4.5 (model clean-up)
-
-Removed (dominated on every benchmark): Gradient Boosting (kept the faster Hist. GB), AdaBoost, Decision Tree,
-k-NN, SVR, Kernel Ridge, the direct SOH(n) ML strategy, the joint per-sample EKF from comparisons, and the
-double-exponential particle filter. Added: early-life ΔQ(V) features and a Severson-style lifetime model;
-hierarchical Bayesian degradation model (fleet prior with temperature/current covariates); particle filter and
-physics-mean GP on the same physics law; skill-weighted stacked ensemble; PINN mechanism states constrained by
-half-cell LLI/LAM.
-
-## New in v4.4
-
-- **Live twin replay** (second view): streams a battery's life one discharge at a time with play / pause /
-  step; the dual EKF assimilates each cycle, and the forecast band, predicted end of life and personal
-  degradation rate k update live (`replay` uses `run_dual_twin` + `twin_forecast`).
-- **Optimal operation + replacement by dynamic programming** (Operations): semi-Markov DP over
-  (SOH, season phase) with Dinkelbach's method on the renewal-reward rate, sudden-failure hazard, energy cost
-  and downtime (`solve_replacement_dp`, `DPPolicy`, `evaluate_dp_policy`).
-- **Half-cell OCV fitting** (Data): LiCoO₂ (Ramadass 2004) and graphite (Doyle 1996) potentials fitted to the
-  IR-compensated discharge curve for quantitative LLI, LAM_PE and LAM_NE (`fit_half_cell`,
-  `half_cell_trajectory`).
+Live status bar, fleet KPIs, an instrument cluster (SOH, quick RUL, resistance growth, peak temperature
+gauges) for the selected battery, a fleet health treemap, a risk matrix (remaining life vs degradation
+speed), a triage table with risk levels and alerts, a filterable event log (knees, EOL crossings,
+over-temperature, cold charging, regeneration, excluded cycles) and a one-click HTML report.
+The Operations view adds a what-if scenario planner driven by the cohort stress-factor law.
 
 ## What answers which project question
 

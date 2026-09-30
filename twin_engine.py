@@ -53,7 +53,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
-ENGINE_VERSION = "4.6.0"
+ENGINE_VERSION = "4.3.0"
 R_GAS = 8.314462618          # J mol^-1 K^-1
 FARADAY = 96485.33212        # C mol^-1
 DEFAULT_EOL_AH = 1.4
@@ -410,30 +410,6 @@ def _charge_features(df: pd.DataFrame, cv_tol_V: float = 0.01) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Cycle_Index"] + CHARGE_COLUMNS)
 
 
-# Voltage grid for Q(V): inside every NASA cut-off (2.0-2.7 V) and below the post-step plateau
-QV_GRID = np.linspace(3.95, 3.10, 35)
-QV_COLS = [f"qv_{i:02d}" for i in range(len(QV_GRID))]
-
-
-def _q_of_v(load: pd.DataFrame) -> pd.DataFrame:
-    """Discharged charge Q (Ah) at fixed voltages QV_GRID for every discharge. The voltage is made
-    monotone with a running minimum (self-heating can lift it briefly), then Q is interpolated.
-    Differences of these curves between two cycles give the Delta-Q(V) early-life features."""
-    rows = {}
-    for ci, d in load.groupby("Cycle_Index", sort=True):
-        if len(d) < 10:
-            continue
-        v = np.minimum.accumulate(d["Voltage_V"].to_numpy())
-        q = np.cumsum(np.abs(d["Current_A"].to_numpy()) * d["dt"].to_numpy()) / 3600.0
-        vv, idx = np.unique(v[::-1], return_index=True)          # ascending voltage
-        qq = q[::-1][idx]
-        ok = (QV_GRID >= vv[0]) & (QV_GRID <= vv[-1])
-        rows[ci] = np.where(ok, np.interp(QV_GRID, vv, qq), np.nan)
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame.from_dict(rows, orient="index", columns=QV_COLS)
-
-
 def _cell_cycle_features(df: pd.DataFrame, cell_id: str) -> pd.DataFrame:
     """Per-discharge-cycle features of one prepared cell."""
     ah_row = np.abs(df["Current_A"].to_numpy()) * df["dt"].to_numpy() / 3600.0
@@ -462,9 +438,6 @@ def _cell_cycle_features(df: pd.DataFrame, cell_id: str) -> pd.DataFrame:
     })
     out["V_mean_V"] = out["E_dis_Wh"] / out["Capacity_Ah"].where(out["Capacity_Ah"] > 0)
     out["dT_C"] = out["T_max_C"] - out["T_start_C"]
-    qv = _q_of_v(load)
-    if not qv.empty:
-        out = out.join(qv)
     if "Ambient_C" in dis.columns:
         out["Ambient_C"] = g["Ambient_C"].first()
     # Load-step voltage drop: rest voltage (first sample, I ~ 0) minus first loaded sample
@@ -893,9 +866,9 @@ def metrics_table(metrics: Dict[str, ForecastMetrics]) -> pd.DataFrame:
 # 4. ML SURROGATES
 # =============================================================================
 GPR_MAX_ROWS = 700                     # exact GP is O(n^3): subsample the training rows
-ML_STRATEGIES = ("increment",)          # "direct" SOH(n) regression removed in v4.5 (flat-lines)
+ML_STRATEGIES = ("increment", "direct")
 ML_FEATURES = ["n", "Ambient_C", "I_dis_A", "V_cut_V"]            # direct (legacy) strategy
-RATE_FEATURES = ["SOH_state", "Ambient_C", "I_dis_A", "V_cut_V", "early_slope", "early_rdc_growth", "dq_logvar"]
+RATE_FEATURES = ["SOH_state", "Ambient_C", "I_dis_A", "V_cut_V", "early_slope", "early_rdc_growth"]
 
 
 @dataclass(frozen=True)
@@ -929,13 +902,31 @@ MODEL_SPECS: Dict[str, ModelSpec] = {m.name: m for m in (
     ModelSpec("Extra Trees", "Tree ensemble (bagging)", "Randomised split thresholds: smoother, less variance than RF.",
               (_P("n_estimators", "Trees", "int", 400, 50, 1000), _P("max_depth", "Max depth (0 = none)", "int", 0, 0, 30),
                _P("min_samples_leaf", "Min samples per leaf", "int", 2, 1, 30)), scaled=False),
+    ModelSpec("Gradient Boosting", "Tree ensemble (boosting)", "Sequential trees fitting residuals; strong on tabular data.",
+              (_P("n_estimators", "Stages", "int", 400, 50, 2000), _P("learning_rate", "Learning rate", "log", 0.05, 0.005, 0.5),
+               _P("max_depth", "Tree depth", "int", 3, 1, 8), _P("subsample", "Row subsample", "float", 0.8, 0.3, 1.0)),
+              scaled=False),
     ModelSpec("Hist. Gradient Boosting", "Tree ensemble (boosting)", "LightGBM-style histogram boosting; fast, handles NaN.",
               (_P("max_iter", "Iterations", "int", 300, 50, 2000), _P("learning_rate", "Learning rate", "log", 0.05, 0.005, 0.5),
                _P("max_leaf_nodes", "Leaves per tree", "int", 31, 4, 128), _P("l2_regularization", "L2 regularisation", "log", 1e-3, 1e-6, 10.0)),
               scaled=False),
+    ModelSpec("AdaBoost", "Tree ensemble (boosting)", "Re-weights hard samples; boosted shallow trees.",
+              (_P("n_estimators", "Stages", "int", 300, 20, 1000), _P("learning_rate", "Learning rate", "log", 0.1, 0.005, 2.0),
+               _P("max_depth", "Base-tree depth", "int", 4, 1, 10)), scaled=False),
+    ModelSpec("Decision Tree", "Single tree", "Interpretable piecewise-constant baseline.",
+              (_P("max_depth", "Max depth", "int", 8, 1, 30), _P("min_samples_leaf", "Min samples per leaf", "int", 5, 1, 50)),
+              scaled=False),
+    ModelSpec("k-Nearest Neighbours", "Instance-based", "Averages the k most similar training states.",
+              (_P("n_neighbors", "Neighbours k", "int", 10, 1, 60), _P("weights", "Weighting", "choice", "distance", options=("distance", "uniform")),
+               _P("p", "Minkowski power (1 = Manhattan, 2 = Euclid)", "int", 2, 1, 3))),
     ModelSpec("Gaussian Process", "Kernel / Bayesian", "Smooth non-parametric fit with native uncertainty (O(n³)).",
               (_P("length_scale", "Initial RBF length scale", "log", 1.0, 0.05, 20.0), _P("noise", "Initial noise level", "log", 0.1, 1e-4, 1.0),
                _P("restarts", "Optimiser restarts", "int", 1, 0, 5))),
+    ModelSpec("SVR", "Kernel", "Epsilon-insensitive RBF support-vector regression.",
+              (_P("C", "Regularisation C", "log", 10.0, 0.01, 1000.0), _P("epsilon", "Epsilon tube", "log", 0.05, 1e-3, 1.0),
+               _P("gamma", "Kernel gamma", "choice", "scale", options=("scale", "auto", 0.01, 0.1, 1.0)))),
+    ModelSpec("Kernel Ridge", "Kernel", "Closed-form RBF kernel ridge regression.",
+              (_P("alpha", "Regularisation alpha", "log", 0.1, 1e-4, 100.0), _P("gamma", "RBF gamma", "log", 0.1, 1e-3, 10.0))),
     ModelSpec("MLP", "Neural network", "Feed-forward network (ReLU), early stopping optional.",
               (_P("hidden", "Hidden layers", "layers", "64,64", help="comma-separated widths, e.g. 128,64,32"),
                _P("alpha", "L2 penalty", "log", 1e-3, 1e-6, 1.0), _P("learning_rate_init", "Learning rate", "log", 3e-3, 1e-4, 0.1),
@@ -951,9 +942,6 @@ MODEL_SPECS: Dict[str, ModelSpec] = {m.name: m for m in (
               (_P("degree", "Polynomial degree", "int", 3, 1, 5),), poly=True),
 )}
 ML_MODELS = tuple(MODEL_SPECS)
-# Removed in v4.5 (dominated on every benchmark, see README): Gradient Boosting (duplicate of the faster
-# histogram version), AdaBoost, Decision Tree, k-NN (cannot extrapolate), SVR and Kernel Ridge (a GP
-# without uncertainty).
 
 
 def default_params(name: str) -> Dict[str, Any]:
@@ -1006,16 +994,31 @@ def make_model(name: str, seed: int = 0, params: Optional[Dict[str, Any]] = None
     elif name == "Extra Trees":
         est = E.ExtraTreesRegressor(n_estimators=p["n_estimators"], max_depth=depth(p["max_depth"]),
                                     min_samples_leaf=p["min_samples_leaf"], n_jobs=-1, random_state=seed)
+    elif name == "Gradient Boosting":
+        est = E.GradientBoostingRegressor(n_estimators=p["n_estimators"], learning_rate=p["learning_rate"],
+                                          max_depth=p["max_depth"], subsample=p["subsample"], random_state=seed)
     elif name == "Hist. Gradient Boosting":
         est = E.HistGradientBoostingRegressor(max_iter=p["max_iter"], learning_rate=p["learning_rate"],
                                               max_leaf_nodes=p["max_leaf_nodes"],
                                               l2_regularization=p["l2_regularization"], random_state=seed)
+    elif name == "AdaBoost":
+        est = E.AdaBoostRegressor(tree.DecisionTreeRegressor(max_depth=p["max_depth"]), n_estimators=p["n_estimators"],
+                                  learning_rate=p["learning_rate"], random_state=seed)
+    elif name == "Decision Tree":
+        est = tree.DecisionTreeRegressor(max_depth=p["max_depth"], min_samples_leaf=p["min_samples_leaf"],
+                                         random_state=seed)
+    elif name == "k-Nearest Neighbours":
+        est = neighbors.KNeighborsRegressor(n_neighbors=p["n_neighbors"], weights=p["weights"], p=p["p"])
     elif name == "Gaussian Process":
         from sklearn.gaussian_process import GaussianProcessRegressor
         from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
         kern = ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=p["length_scale"], length_scale_bounds=(1e-2, 1e2)) \
             + WhiteKernel(p["noise"], (1e-6, 1.0))
         est = GaussianProcessRegressor(kernel=kern, n_restarts_optimizer=p["restarts"], random_state=seed)
+    elif name == "SVR":
+        est = SVR(C=p["C"], epsilon=p["epsilon"], gamma=p["gamma"])
+    elif name == "Kernel Ridge":
+        est = KernelRidge(alpha=p["alpha"], kernel="rbf", gamma=p["gamma"])
     elif name == "MLP":
         est = MLPRegressor(hidden_layer_sizes=tuple(int(x) for x in p["hidden"].split(",")), alpha=p["alpha"],
                            learning_rate_init=p["learning_rate_init"], max_iter=p["max_iter"],
@@ -1071,89 +1074,10 @@ def _sample_weight_kw(model, w: np.ndarray) -> dict:
     return {f"{model.steps[-1][0]}__sample_weight": w} if isinstance(model, Pipeline) else {"sample_weight": w}
 
 
-def delta_q_curve(d: pd.DataFrame, n_a: int, n_b: int, halfwidth: int = 2) -> Optional[np.ndarray]:
-    """Delta-Q(V) = Q_b(V) - Q_a(V) on QV_GRID for one cell (medians over +-halfwidth cycles
-    around n_a and n_b to suppress single-cycle noise). None when Q(V) is unavailable."""
-    if QV_COLS[0] not in d.columns:
-        return None
-    d = d[~d["outlier"]] if "outlier" in d.columns else d
-
-    def around(n):
-        w = d[(d["n"] >= n - halfwidth) & (d["n"] <= n + halfwidth)]
-        return w[QV_COLS].median().to_numpy(dtype=float) if len(w) else None
-
-    qa, qb = around(n_a), around(n_b)
-    if qa is None or qb is None:
-        return None
-    dq = qb - qa
-    return dq if np.isfinite(dq).sum() >= 8 else None
-
-
-def delta_q_stats(d: pd.DataFrame, n_a: int, n_b: int) -> Dict[str, float]:
-    """Summary statistics of Delta-Q(V): log10 variance (Severson's single strongest predictor of
-    cycle life), log10 |min| and mean."""
-    dq = delta_q_curve(d, n_a, n_b)
-    if dq is None:
-        return {"dq_logvar": np.nan, "dq_logmin": np.nan, "dq_mean": np.nan}
-    dq = dq[np.isfinite(dq)]
-    return {"dq_logvar": float(np.log10(max(np.var(dq), 1e-12))),
-            "dq_logmin": float(np.log10(max(abs(np.min(dq)), 1e-9))), "dq_mean": float(np.mean(dq))}
-
-
-def early_life_lifetime(ct: pd.DataFrame, eol_ah: float = DEFAULT_EOL_AH, n_a: int = 2, n_b: int = 20,
-                        alpha: float = 0.01, l1_ratio: float = 0.5) -> Dict[str, Any]:
-    """Early-life prediction of cycle life in the spirit of Severson et al. (Nature Energy 4, 2019):
-    features from the first n_b cycles only (Delta-Q(V) statistics between cycles n_a and n_b, early
-    fade slope, operating conditions) -> log10(cycles to EOL) by an elastic net, validated
-    leave-one-cell-out on the cells that actually reached EOL. NASA cells live 40-200 cycles, so the
-    early window is shorter than Severson's (10 -> 100) and the cohort is small: read the error,
-    not only the correlation."""
-    from sklearn.linear_model import ElasticNet
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-
-    good = ct[~ct["outlier"]]
-    meta = cell_meta(ct)
-    rows = []
-    for cid, d in good.groupby("Cell_ID"):
-        d = d.sort_values("n")
-        if d["n"].max() < n_b + 5:
-            continue
-        soh_eol = soh_eol_for(float(d["C_bol_Ah"].iloc[0]), eol_ah)
-        life = first_crossing(d["n"].to_numpy(), d["SOH"].to_numpy(), soh_eol, smooth=5)
-        st_ = delta_q_stats(d, n_a, n_b)
-        w = d[d["n"] <= n_b]
-        rows.append({"Cell_ID": cid, "life": life, **st_,
-                     "early_slope": float(np.polyfit(w["n"], w["SOH"], 1)[0]) * 100 if len(w) >= 3 else np.nan,
-                     "Ambient_C": float(meta.loc[cid, "Ambient_C"]), "I_dis_A": float(meta.loc[cid, "I_dis_A"])})
-    tab = pd.DataFrame(rows)
-    out: Dict[str, Any] = {"available": False, "table": tab, "n_a": n_a, "n_b": n_b}
-    lab = tab.dropna(subset=["life", "dq_logvar"])
-    if len(lab) < 5:
-        return out
-    feats = ["dq_logvar", "dq_logmin", "early_slope", "Ambient_C", "I_dis_A"]
-    X = lab[feats].fillna(lab[feats].median()).to_numpy(float)
-    y = np.log10(lab["life"].to_numpy(float))
-    pred = np.empty(len(y))
-    for i in range(len(y)):
-        m = np.arange(len(y)) != i
-        mdl = make_pipeline(StandardScaler(), ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=50000)).fit(X[m], y[m])
-        pred[i] = mdl.predict(X[i:i + 1])[0]
-    lab = lab.assign(life_pred=10 ** pred)
-    err = np.abs(lab["life_pred"] - lab["life"]) / lab["life"]
-    base = np.abs(10 ** np.mean(y) - lab["life"]) / lab["life"]
-    rho = float(np.corrcoef(lab["dq_logvar"], y)[0, 1])
-    out.update({"available": True, "loco": lab, "mape_pct": float(100 * err.mean()),
-                "baseline_mape_pct": float(100 * base.mean()), "corr_logvar_loglife": rho,
-                "n_cells": len(lab), "features": feats})
-    return out
-
-
 def early_life_descriptors(good: pd.DataFrame, n_window: int) -> pd.DataFrame:
     """Per-cell early-life descriptors computed only from cycles n <= n_window (no leakage):
     early_slope       - linear SOH slope (per 100 cycles)
     early_rdc_growth  - relative load-step resistance growth (per 100 cycles)
-    dq_logvar         - log10 variance of Delta-Q(V) between cycle ~2 and n_window (Severson et al. 2019)
     Missing values are filled with the cohort median."""
     rows = {}
     for cid, d in good.groupby("Cell_ID"):
@@ -1167,8 +1091,7 @@ def early_life_descriptors(good: pd.DataFrame, n_window: int) -> pd.DataFrame:
             r0 = float(r["R_dc_ohm"].head(3).median())
             if r0 > 0:
                 rg = float(np.polyfit(r["n"], r["R_dc_ohm"] / r0, 1)[0]) * 100
-        dq = delta_q_stats(d, 2, max(n_window, 4))
-        rows[cid] = {"early_slope": slope, "early_rdc_growth": rg, "dq_logvar": dq["dq_logvar"]}
+        rows[cid] = {"early_slope": slope, "early_rdc_growth": rg}
     out = pd.DataFrame.from_dict(rows, orient="index")
     for c in out.columns:
         med = out[c].median()
@@ -1217,6 +1140,28 @@ def _ml_curve(good: pd.DataFrame, meta: pd.DataFrame, target: str, n0: int, mode
     else:
         cells = [c for c in meta.index if (use_population or c in limits)]
     t0 = time.time()
+    if strategy == "direct":
+        allowed = np.zeros(len(good), dtype=bool)
+        for c in cells:
+            m = (good["Cell_ID"] == c).to_numpy()
+            if c in limits:
+                m = m & (good["n"] <= limits[c]).to_numpy()
+            allowed = allowed | m
+        if allowed.sum() < 5:
+            raise ValueError("Not enough training data for the ML surrogate.")
+        f = good[["Cell_ID", "n"]].copy()
+        for col in ("Ambient_C", "I_dis_A", "V_cut_V"):
+            f[col] = f["Cell_ID"].map(meta[col])
+        X = f[ML_FEATURES].to_numpy(dtype=float)[allowed]
+        y = good["SOH"].to_numpy()[allowed]
+        w = np.where((good["Cell_ID"] == target).to_numpy()[allowed], target_weight, 1.0)
+        X, y, w = _gp_subsample(model_name, X, y, w, seed)
+        model = _StandardisedTarget(make_model(model_name, seed, params)).fit(X, y, w)
+        Xg = np.column_stack([n_grid] + [np.full(len(n_grid), float(meta.loc[target, c]))
+                                         for c in ("Ambient_C", "I_dis_A", "V_cut_V")])
+        pred = model.predict(Xg)
+        return n_grid, pred, int(allowed.sum()), time.time() - t0
+
     # ---- increment strategy: autonomous fade-rate model, integrated forward ----
     desc = early_life_descriptors(good, n0)
     Xs, ys, ws = [], [], []
@@ -1226,7 +1171,7 @@ def _ml_curve(good: pd.DataFrame, meta: pd.DataFrame, target: str, n0: int, mode
         if not len(s):
             continue
         cond = [float(meta.loc[c, k]) for k in ("Ambient_C", "I_dis_A", "V_cut_V")]
-        dd = [float(desc.loc[c, k]) if c in desc.index else 0.0 for k in ("early_slope", "early_rdc_growth", "dq_logvar")]
+        dd = [float(desc.loc[c, k]) if c in desc.index else 0.0 for k in ("early_slope", "early_rdc_growth")]
         Xs.append(np.column_stack([s] + [np.full(len(s), v) for v in cond + dd]))
         ys.append(r)
         ws.append(np.full(len(s), target_weight if c == target else 1.0))
@@ -1239,7 +1184,7 @@ def _ml_curve(good: pd.DataFrame, meta: pd.DataFrame, target: str, n0: int, mode
     # The rate depends on SOH only for a fixed cell -> evaluate once on an SOH grid.
     soh_grid = np.linspace(0.3, 1.1, 401)
     cond = [float(meta.loc[target, k]) for k in ("Ambient_C", "I_dis_A", "V_cut_V")]
-    dd = [float(desc.loc[target, k]) if target in desc.index else 0.0 for k in ("early_slope", "early_rdc_growth", "dq_logvar")]
+    dd = [float(desc.loc[target, k]) if target in desc.index else 0.0 for k in ("early_slope", "early_rdc_growth")]
     Xg = np.column_stack([soh_grid] + [np.full(len(soh_grid), v) for v in cond + dd])
     rate_grid = np.minimum(model.predict(Xg), 0.0)      # regeneration is transient: no net recovery
     s_obs = obs["SOH"].rolling(5, center=True, min_periods=1).median()
@@ -2365,7 +2310,6 @@ class PINNConfig:
     I_charge_A: float = 1.5           # NASA protocol CC charge current
     T_plating_onset_C: float = 10.0   # cold-plating onset (smooth gate width 3 K)
     lambda_prior: float = 0.02        # weak log-normal priors on the rate constants (identifiability)
-    lambda_modes: float = 1.0         # half-cell LLI / LAM targets for the mechanism states (if supplied)
 
     def __post_init__(self) -> None:
         if self.physics not in PINN_PHYSICS:
@@ -2722,10 +2666,6 @@ class MechanisticPINN(HybridPINN):
             I, Tb = data["I_bv"], data["T_bv"] + 273.15
             dv = I * (b["R_int"] + self.R_x()) + self._eta_ct(I, Tb, b["R_ct"])
             L["bv"] = ((dv - data["dv"]) / cfg.dv_scale).square().mean()
-        if len(data.get("n_mode", [])) and cfg.lambda_modes > 0:
-            mm_ = self.states(data["n_mode"])
-            qs, qp, ql = (self._col(mm_["Q"], i) for i in range(3))
-            L["modes"] = ((qs + qp - data["lli"]) / 0.01).square().mean() + ((ql - data["lam"]) / 0.01).square().mean()
         if len(data.get("n_v", [])) and cfg.lambda_volt > 0:
             v = self.states(data["n_v"])
             I, Tv = data["I_v"], data["T_v"] + 273.15
@@ -2735,8 +2675,6 @@ class MechanisticPINN(HybridPINN):
 
     def total(self, L: Dict[str, Tensor]) -> Tensor:
         tot = super().total(L) + self.cfg.lambda_prior * L["prior"]
-        if "modes" in L:
-            tot = tot + self.cfg.lambda_modes * L["modes"]
         if "volt" in L:
             tot = tot + self.cfg.lambda_volt * L["volt"]
         return tot
@@ -2890,7 +2828,7 @@ def pinn_training_data(ct_cell: pd.DataFrame, eis: pd.DataFrame, n0: int, n_hori
 def train_pinn(ct: pd.DataFrame, imp: Optional[pd.DataFrame], cell_id: str, n0: int,
                cfg: Optional[PINNConfig] = None, eol_ah: float = DEFAULT_EOL_AH,
                progress: ProgressFn = None, ea_value: Optional[float] = None,
-               alpha: float = 0.2, mode_targets: Optional[pd.DataFrame] = None) -> PINNResult:
+               alpha: float = 0.2) -> PINNResult:
     cfg = cfg or PINNConfig()
     ct_cell = ct[ct["Cell_ID"] == cell_id].sort_values("n")
     if ct_cell.empty:
@@ -2901,13 +2839,6 @@ def train_pinn(ct: pd.DataFrame, imp: Optional[pd.DataFrame], cell_id: str, n0: 
     r_ct0 = float(eis.head(3)["Rct_ohm"].median()) if len(eis) else 0.07
     n_horizon = int(max(ct_cell["n"].max(), n0) * cfg.horizon_factor)
     data = pinn_training_data(ct_cell, eis, n0, n_horizon, cfg)
-    data["n_mode"], data["lli"], data["lam"] = np.array([]), np.zeros((0, 1)), np.zeros((0, 1))
-    if mode_targets is not None and len(mode_targets) and cfg.physics == "mechanistic":
-        mt = mode_targets[mode_targets["n"] <= n0]            # no information from beyond the origin
-        if len(mt) >= 2:
-            data["n_mode"] = mt["n"].to_numpy(float)
-            data["lli"] = (mt["LLI (%)"].to_numpy(float) / 100).reshape(-1, 1)
-            data["lam"] = ((mt["LAM_PE (%)"] + mt["LAM_NE (%)"]).clip(lower=0).to_numpy(float) / 100).reshape(-1, 1)
     if len(data["n_soh"]) < 5:
         raise ValueError("Forecast origin too early: need at least 5 capacity points.")
 
@@ -2943,7 +2874,7 @@ def train_pinn_ensemble(ct: pd.DataFrame, imp: Optional[pd.DataFrame], cell_id: 
                         cfg: Optional[PINNConfig] = None, seeds: Sequence[int] = (0, 1, 2),
                         eol_ah: float = DEFAULT_EOL_AH, progress: ProgressFn = None,
                         ea_value: Optional[float] = None, level: float = 0.9,
-                        alpha: float = 0.2, mode_targets: Optional[pd.DataFrame] = None) -> PINNResult:
+                        alpha: float = 0.2) -> PINNResult:
     """Deep ensemble over initialisation seeds. Returns the median trajectory, a band from
     the member spread (an *epistemic* spread only - with few members it is an envelope,
     not a calibrated interval) and a per-parameter spread table: a coefficient of
@@ -2955,8 +2886,7 @@ def train_pinn_ensemble(ct: pd.DataFrame, imp: Optional[pd.DataFrame], cell_id: 
     for j, sd in enumerate(seeds):
         sub = (lambda f, m, j=j: _report(progress, (j + f) / len(seeds), f"member {j + 1}/{len(seeds)}: {m}")) \
             if progress else None
-        members.append(train_pinn(ct, imp, cell_id, n0, replace(cfg, seed=int(sd)), eol_ah, sub, ea_value, alpha,
-                                  mode_targets))
+        members.append(train_pinn(ct, imp, cell_id, n0, replace(cfg, seed=int(sd)), eol_ah, sub, ea_value, alpha))
     if len(members) == 1:
         return members[0]
     S = np.vstack([m.soh for m in members])
@@ -2989,7 +2919,7 @@ def train_pinn_ensemble(ct: pd.DataFrame, imp: Optional[pd.DataFrame], cell_id: 
 # =============================================================================
 # 9. PARADIGM COMPARISON
 # =============================================================================
-TWIN_NAMES = {"dual": "ECM twin · dual EKF"}      # joint per-sample EKF removed from comparisons in v4.5
+TWIN_NAMES = {"dual": "ECM twin · dual EKF", "joint": "ECM twin · joint EKF"}
 PINN_NAME = "Hybrid PINN"
 
 
@@ -3033,14 +2963,13 @@ def resolve_ea(ct: pd.DataFrame, cfg: PINNConfig) -> Tuple[Optional[float], Opti
 
 def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.DataFrame],
                       cell_id: str, n0_frac: float, twin_params: TwinParameters,
-                      pinn_cfg: PINNConfig, ml_model: str = "Hist. Gradient Boosting",
+                      pinn_cfg: PINNConfig, ml_model: str = "Gradient Boosting",
                       eol_ah: float = DEFAULT_EOL_AH, ekf: Optional[EKFResult] = None,
                       progress: ProgressFn = None, *, observer: str = "dual",
                       dual_cfg: Optional[DualTwinConfig] = None, ml_strategy: str = "increment",
                       conformal_cells: int = 4, band_level: float = 0.9,
                       pinn_seeds: Sequence[int] = (0,), alpha: float = 0.2,
-                      extra: Sequence[str] = ("semi", "pf", "hb", "gp", "ens"), run_pinn: bool = True,
-                      mode_targets: Optional[pd.DataFrame] = None) -> ComparisonResult:
+                      extra: Sequence[str] = ("semi", "pf"), run_pinn: bool = True) -> ComparisonResult:
     """Common protocol: everything up to discharge cycle n0 may be used, cycles > n0 are
     held out. (1) ML: population + early target data, conformal band.
     (2) ECM twin: causal observer estimate at n0, then physics forecast (MC band for dual).
@@ -3097,13 +3026,11 @@ def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.
         errors[tname] = str(exc)
 
     progs: Dict[str, Any] = {}
-    PROG_FNS = {"semi": (SEMI_NAME, semi_empirical_forecast), "pf": (PF_NAME, particle_filter_forecast),
-                "hb": (HB_NAME, hierarchical_bayes_forecast), "gp": (GP_NAME, physics_gp_forecast)}
-    for key, (pname, fn) in PROG_FNS.items():
+    for key, fn in (("semi", semi_empirical_forecast), ("pf", particle_filter_forecast)):
         if key not in extra:
             continue
         try:
-            _report(progress, 0.55, pname)
+            _report(progress, 0.55, "semi-empirical law" if key == "semi" else "particle filter")
             f = fn(ct, cell_id, n0, eol_ah, band_level, alpha=alpha)
             preds[f.name] = (f.n_grid, f.soh)
             mets[f.name] = f.metrics
@@ -3111,7 +3038,7 @@ def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.
             ruls[f.name] = f.rul_samples
             progs[f.name] = f
         except Exception as exc:
-            errors[pname] = str(exc)
+            errors[SEMI_NAME if key == "semi" else PF_NAME] = str(exc)
 
     pinn_res = None
     ea_info = None
@@ -3123,10 +3050,10 @@ def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.
         sub = lambda f, m: _report(progress, 0.55 + 0.45 * f, m)
         if len(pinn_seeds) > 1:
             pinn_res = train_pinn_ensemble(ct, imp, cell_id, n0, cfg, pinn_seeds, eol_ah, sub, ea_value,
-                                           band_level, alpha, mode_targets)
+                                           band_level, alpha)
         else:
             pinn_res = train_pinn(ct, imp, cell_id, n0, replace(cfg, seed=int(pinn_seeds[0])), eol_ah, sub,
-                                  ea_value, alpha, mode_targets=mode_targets)
+                                  ea_value, alpha)
         preds[PINN_NAME] = (pinn_res.n_grid, pinn_res.soh)
         mets[PINN_NAME] = pinn_res.metrics
         if pinn_res.soh_lo is not None:
@@ -3136,18 +3063,6 @@ def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.
     except Exception as exc:
         errors[PINN_NAME] = str(exc)
 
-    if "ens" in extra:
-        try:
-            ens = stacked_ensemble(ct, cell_id, n0, soh_eol, preds, bands, ruls, ekf, band_level,
-                                   [k for k in ("semi", "pf", "hb", "gp") if k in extra], alpha)
-            if ens is not None:
-                preds[ENS_NAME] = (ens.n_grid, ens.soh)
-                mets[ENS_NAME] = ens.metrics
-                bands[ENS_NAME] = (ens.n_grid, ens.lo, ens.hi)
-                ruls[ENS_NAME] = ens.rul_samples
-                progs[ENS_NAME] = ens
-        except Exception as exc:
-            errors[ENS_NAME] = str(exc)
     _report(progress, 1.0, "comparison done")
     return ComparisonResult(cell_id, n0, soh_eol, good[["n", "Cycle_Index", "SOH", "Capacity_Ah"]],
                             valid_eis(imp, cell_id), preds, mets, ekf, pinn_res, ml_res, errors,
@@ -3157,14 +3072,14 @@ def compare_paradigms(cell_df: pd.DataFrame, ct: pd.DataFrame, imp: Optional[pd.
 # =============================================================================
 # 10. CROSS-CELL BENCHMARK
 # =============================================================================
-BENCH_PARADIGMS = ("ML", "Twin", "PINN", "SemiEmp", "PF", "HB", "GP")
+BENCH_PARADIGMS = ("ML", "Twin", "PINN", "SemiEmp", "PF")
 
 
 @dataclass
 class BenchmarkConfig:
     fracs: Tuple[float, ...] = (0.2, 0.3, 0.4, 0.5, 0.6)
     paradigms: Tuple[str, ...] = BENCH_PARADIGMS
-    ml_model: str = "Hist. Gradient Boosting"
+    ml_model: str = "Gradient Boosting"
     ml_strategy: str = "increment"
     conformal_cells: int = 4
     band_level: float = 0.9
@@ -3255,16 +3170,6 @@ def run_benchmark(store: ParquetStore, ct: pd.DataFrame, imp: Optional[pd.DataFr
                     f = particle_filter_forecast(ct, cell, n0, cfg.eol_ah, cfg.band_level, n_particles=2000)
                     return f.n_grid, f.soh, f.lo, f.hi
                 cands.append((PF_NAME, _pf))
-            if "HB" in cfg.paradigms:
-                def _hb():
-                    f = hierarchical_bayes_forecast(ct, cell, n0, cfg.eol_ah, cfg.band_level)
-                    return f.n_grid, f.soh, f.lo, f.hi
-                cands.append((HB_NAME, _hb))
-            if "GP" in cfg.paradigms:
-                def _gp():
-                    f = physics_gp_forecast(ct, cell, n0, cfg.eol_ah, cfg.band_level)
-                    return f.n_grid, f.soh, f.lo, f.hi
-                cands.append((GP_NAME, _gp))
             for name, fn in cands:
                 t0 = time.time()
                 try:
@@ -3573,8 +3478,7 @@ def simulate_life(policy: Callable, p: CellPhysics, e: Economics, max_cycles: in
         theta_hat = theta * np.array([1.0, 1 + sigma_r_frac * rng.standard_normal(),
                                       1 + sigma_r_frac * rng.standard_normal()])
         theta_hat[0] += sigma_soh * rng.standard_normal()
-        I_sel = policy(theta_hat, T_amb, p, e, cycle=k) if getattr(policy, "needs_cycle", False) \
-            else policy(theta_hat, T_amb, p, e)
+        I_sel = policy(theta_hat, T_amb, p, e)
         out = {key: float(v[0]) for key, v in predict_cycle(theta, [I_sel], T_amb, plant).items()}
         cold_breach = (e.cold_derate_below_C is not None and T_amb < e.cold_derate_below_C
                        and I_sel > e.cold_max_current_A)
@@ -4230,7 +4134,7 @@ def stress_factor_regression(ct: pd.DataFrame, window_frac: float = 0.5, n_boot:
 # 16. SEMI-EMPIRICAL AND PARTICLE-FILTER PROGNOSTICS
 # =============================================================================
 SEMI_NAME = "Semi-empirical · power law"
-PF_NAME = "Particle filter · power law"
+PF_NAME = "Particle filter · double exp."
 
 
 @dataclass
@@ -4243,7 +4147,6 @@ class ProgForecast:
     rul_samples: Optional[np.ndarray]
     params: Dict[str, Any]
     metrics: Optional[ForecastMetrics] = None
-    paths: Optional[np.ndarray] = None
 
 
 def _paths_to_forecast(name: str, n_grid: np.ndarray, obs_n: np.ndarray, obs_soh: np.ndarray, n0: int,
@@ -4379,43 +4282,45 @@ def _fit_dexp(n: np.ndarray, soh: np.ndarray) -> Optional[np.ndarray]:
 
 
 def particle_filter_forecast(ct: pd.DataFrame, cell_id: str, n0: int, eol_ah: float = DEFAULT_EOL_AH,
-                             level: float = 0.9, n_particles: int = 3000, sigma_obs: Optional[float] = None,
-                             jitter: float = 0.01, horizon_factor: float = 1.5, seed: int = 0,
+                             level: float = 0.9, n_particles: int = 3000, sigma_obs: float = 0.012,
+                             jitter: float = 0.02, horizon_factor: float = 1.5, seed: int = 0,
                              alpha: float = 0.2) -> ProgForecast:
-    """Sequential Monte-Carlo (particle filter) prognostic on the physics-based power law in
-    throughput, SOH = s0 [1 - e^a (Ah/100)^z] (v4.5: replaces the empirical double exponential of
-    Saha & Goebel 2009, which was the weakest paradigm in the benchmark).
+    """Bayesian particle-filter prognostic with the double-exponential capacity model used on
+    the NASA Ames cells by Saha & Goebel (2009): SOH(n) = a e^(b n) + c e^(d n).
 
-    Prior: the hierarchical population for this cell's operating conditions (the same fleet
-    knowledge as HB_NAME). The target's cycles <= n0 are assimilated one at a time with a
-    Student-t likelihood (robust to regeneration), systematic resampling when the effective sample
-    size drops below N/2, and roughening jitter. Unlike the Laplace posterior of HB_NAME the
-    particle cloud can represent skewed / multimodal beliefs about (a, z)."""
+    Prior: parameters fitted to every *other* cell (population knowledge), a Gaussian in
+    parameter space with inflated covariance. The target's cycles <= n0 are assimilated one at
+    a time (Student-t likelihood, robust to regeneration spikes), with systematic resampling
+    when the effective sample size drops below N/2 and small roughening jitter against
+    particle impoverishment. Every surviving particle is then extrapolated, giving the
+    median path, a central band and the RUL distribution."""
     good_all = ct[~ct["outlier"]]
     good = good_all[good_all["Cell_ID"] == cell_id].sort_values("n")
     obs = good[good["n"] <= n0]
     if len(obs) < 5:
         raise ValueError("Particle filter: too few observations before n0.")
-    pop = hierarchical_population(ct, exclude=cell_id)
+    fits = []
+    for c, d in good_all.groupby("Cell_ID"):
+        if c == cell_id or len(d) < 15:
+            continue
+        p = _fit_dexp(d["n"].to_numpy(), d["SOH"].to_numpy())
+        if p is not None:
+            fits.append(p)
     rng = np.random.default_rng(seed)
-    meta = cell_meta(ct)
-    if pop["available"]:
-        x = _cell_covariates(meta, [cell_id])[:, pop["keep"]]
-        mu, S = (x @ pop["G"])[0], pop["Sigma"] * 1.5
-        sig = sigma_obs or max(pop["sigma_obs"], 0.003)
+    if len(fits) >= 3:
+        F = np.array(fits)
+        mu, C = F.mean(axis=0), np.cov(F.T) * 2.0 + np.diag([1e-4, 1e-3, 1e-4, 1e-2])
     else:
-        mu, S, sig = np.array([-2.5, 1.0]), np.diag([1.0, 0.3]) ** 2, sigma_obs or 0.01
-    y0 = float(np.median(obs["SOH"].head(3)))
-    parts = np.column_stack([y0 + 0.01 * rng.standard_normal(n_particles),
-                             rng.multivariate_normal(mu, S, size=n_particles)])
-    parts[:, 2] = np.clip(parts[:, 2], 0.3, 3.0)
-    ah0 = float(good["cum_Ah"].iloc[0])
+        mu, C = np.array([1.0, -0.1, -0.01, 1.0]), np.diag([0.02, 0.1, 0.01, 0.5]) ** 2
+    parts = rng.multivariate_normal(mu, C, size=n_particles)
+    parts = np.clip(parts, _PF_BOUNDS[:, 0], _PF_BOUNDS[:, 1])
     logw = np.zeros(n_particles)
-    nu, n_resample = 4.0, 0
-    scale = np.array([0.002, jitter * 5, jitter * 2])
-    for ah_k, y_k in zip(obs["cum_Ah"].to_numpy(float) - ah0, obs["SOH"].to_numpy(float)):
-        pred = _pl_soh(parts, np.array([max(ah_k, 1e-6)]))[:, 0]
-        r = (y_k - pred) / sig
+    nu = 4.0
+    scale = np.abs(mu) * jitter + 1e-4
+    n_resample = 0
+    for n_k, y_k in zip(obs["n"].to_numpy(dtype=float), obs["SOH"].to_numpy(dtype=float)):
+        pred = _dexp(parts, np.array([n_k / 100.0]))[:, 0]
+        r = (y_k - pred) / sigma_obs
         logw += -0.5 * (nu + 1) * np.log1p(r ** 2 / nu)
         logw -= logw.max()
         w = np.exp(logw)
@@ -4424,26 +4329,24 @@ def particle_filter_forecast(ct: pd.DataFrame, cell_id: str, n0: int, eol_ah: fl
             pos = (rng.random() + np.arange(n_particles)) / n_particles
             idx = np.minimum(np.searchsorted(np.cumsum(w), pos), n_particles - 1)
             parts = parts[idx] + rng.standard_normal(parts.shape) * scale
-            parts[:, 2] = np.clip(parts[:, 2], 0.3, 3.0)
+            parts = np.clip(parts, _PF_BOUNDS[:, 0], _PF_BOUNDS[:, 1])
             logw = np.zeros(n_particles)
             n_resample += 1
     w = np.exp(logw - logw.max())
     w /= w.sum()
-    post = parts[rng.choice(n_particles, size=min(800, n_particles), p=w)]
+    idx = rng.choice(n_particles, size=min(800, n_particles), p=w)
+    post = parts[idx]
     n_max = int(good["n"].max() * horizon_factor)
     n_grid = np.arange(1, n_max + 1)
     fut = n_grid[n_grid > n0]
-    ah_f = np.maximum(float(obs["cum_Ah"].iloc[-1]) - ah0 + (fut - int(obs["n"].iloc[-1])) * _mean_ah_per_cycle(good, n0),
-                      1e-6)
-    paths = _pl_soh(post, ah_f) + sig * 0.5 * rng.standard_normal((len(post), 1))
+    paths = _dexp(post, fut / 100.0)
+    paths = paths + sigma_obs * 0.3 * rng.standard_normal((len(post), 1))
     soh_eol = soh_eol_for(float(good["C_bol_Ah"].iloc[0]), eol_ah)
     fc = _paths_to_forecast(PF_NAME, n_grid, good["n"].to_numpy(), good["SOH"].to_numpy(), n0, paths, soh_eol,
-                            level, {"posterior_mean": post.mean(axis=0).tolist(),
-                                    "prior_cells": int(pop.get("n_cells", 0)),
+                            level, {"posterior_mean": post.mean(axis=0).tolist(), "prior_cells": len(fits),
                                     "resampling_steps": n_resample, "n_particles": n_particles})
     fc.metrics = forecast_metrics(good["n"].to_numpy(), good["SOH"].to_numpy(), n_grid, fc.soh, n0, soh_eol,
                                   fc.lo, fc.hi, alpha)
-    fc.paths = paths
     return fc
 
 
@@ -4533,11 +4436,7 @@ def renewal_evaluation(life: pd.DataFrame, threshold: float, e: Economics, mm: M
         Profit = Revenue - EnergyCost - MaintenanceCost     (project objective)
         J_op   = Revenue - EnergyCost
         J_maint = MaintenanceCost + PerformanceLoss"""
-    return renewal_from_segment(life[life["SOH"] >= threshold], threshold, e, mm)
-
-
-def renewal_from_segment(d: pd.DataFrame, threshold: float, e: Economics, mm: MaintenanceModel) -> Dict[str, float]:
-    """Renewal economics of an explicit life segment (install -> planned replacement)."""
+    d = life[life["SOH"] >= threshold]
     if d.empty:
         return {"threshold": threshold, "cycles": 0, "rate": float("nan")}
     h = mm.hazard(d["SOH"].to_numpy())
@@ -4916,590 +4815,3 @@ def scenario_projection(sf: Dict[str, Any], scenarios: Sequence[Dict[str, float]
                          "life_to_EOL": int(eol) if eol is not None else None,
                          "rate_per_Ah": float(rates[0])})
     return pd.DataFrame(rows)
-
-
-# =============================================================================
-# 21. OPTIMAL OPERATION + REPLACEMENT BY DYNAMIC PROGRAMMING (semi-Markov, average reward)
-# =============================================================================
-@dataclass
-class DPResult:
-    rho: float                       # optimal long-run profit rate (CU/h) of the model
-    soh_grid: np.ndarray
-    phases: np.ndarray               # season-phase bin centres (cycle index within the period)
-    T_amb: np.ndarray                # ambient temperature per phase bin
-    action: np.ndarray               # [n_soh, n_phase]: index into currents, or -1 = replace
-    currents: Tuple[float, ...]
-    value: np.ndarray                # W_rho*(s, phase)
-    rho_path: List[float]
-    period: float
-    replace_boundary: np.ndarray     # per phase: highest SOH at which replacement is optimal
-
-
-class DPPolicy:
-    """Callable operating policy from a DPResult (nearest SOH node, season phase from the cycle
-    index). ``replace_now`` tells the evaluator when the DP would replace the cell."""
-    needs_cycle = True
-
-    def __init__(self, dp: DPResult):
-        self.dp = dp
-
-    def _idx(self, soh: float, cycle: int) -> Tuple[int, int]:
-        i = int(np.clip(np.searchsorted(self.dp.soh_grid, soh), 0, len(self.dp.soh_grid) - 1))
-        if i > 0 and abs(self.dp.soh_grid[i - 1] - soh) < abs(self.dp.soh_grid[i] - soh):
-            i -= 1
-        nb = len(self.dp.phases)
-        j = int((cycle % self.dp.period) / self.dp.period * nb) % nb
-        return i, j
-
-    def replace_now(self, soh: float, cycle: int) -> bool:
-        i, j = self._idx(soh, cycle)
-        return bool(self.dp.action[i, j] < 0)
-
-    def __call__(self, theta_hat: np.ndarray, T_amb: float, p: CellPhysics, e: Economics, cycle: int = 0) -> float:
-        i, j = self._idx(float(theta_hat[0]), cycle)
-        a = int(self.dp.action[i, j])
-        if a < 0:                                   # replacement due: lowest-stress current until swapped
-            a = int(np.argmin(self.dp.currents))
-        I_sel = float(self.dp.currents[a])
-        # hard safety guard on the *measured* ambient (the DP works on season bins)
-        if e.cold_derate_below_C is not None and T_amb < e.cold_derate_below_C and I_sel > e.cold_max_current_A:
-            allowed = [c for c in self.dp.currents if c <= e.cold_max_current_A]
-            I_sel = max(allowed) if allowed else min(self.dp.currents)
-        return I_sel
-
-
-def solve_replacement_dp(e: Economics, p: CellPhysics, mm: Optional[MaintenanceModel] = None,
-                         soh_min: float = 0.55, n_soh: int = 90, n_phase: int = 16, period: float = 80.0,
-                         ambient_mean_C: float = 20.0, ambient_amp_C: float = 16.0,
-                         fast_dt_s: float = 60.0, tol: float = 1e-6, progress: ProgressFn = None,
-                         thermal_margin_K: float = 3.0, install_phase: Optional[int] = 0) -> DPResult:
-    """Joint operation + maintenance policy by dynamic programming.
-
-    State (SOH, season phase); actions: discharge at one of e.currents_A, or replace.
-    Semi-Markov average-reward problem solved with Dinkelbach's method: for a candidate
-    profit rate rho, value iteration on
-        W(s, j) = max{ -C_plan - rho t_plan,                                   (replace)
-                       max_I [ r_I - rho t_I + h(s)(-C_unpl - rho t_unpl)
-                               + (1 - h(s)) E W(s - dSOH_I, j') ] }            (operate)
-    with r = revenue - energy cost, h the sudden-failure hazard and j' the next season phase.
-    The renewal-reward theorem gives the optimum at rho* where the value of a new cell
-    (installed at ``install_phase``, or season-averaged when None) is zero; rho is updated by bisection. Infeasible actions
-    (thermal limit, cold derating) are excluded. Resistances follow the plant's fade coupling
-    at the reference temperature (path-dependent cold resistance growth is neglected)."""
-    mm = mm or MaintenanceModel(replacement_cost=e.replacement_cost)
-    pf = replace(p, dt_s=float(fast_dt_s)) if fast_dt_s else p
-    S = np.linspace(soh_min, 1.0, n_soh)
-    phases = (np.arange(n_phase) + 0.5) * period / n_phase
-    Tj = np.array([ambient_profile(float(c), ambient_mean_C, ambient_amp_C, period) for c in phases])
-    # coldest / hottest ambient inside each phase bin: safety rules must hold for every cycle in the bin
-    edges = np.linspace(0, period, n_phase + 1)
-    T_lo = np.array([min(ambient_profile(float(c), ambient_mean_C, ambient_amp_C, period)
-                         for c in np.linspace(edges[j], edges[j + 1], 9)) for j in range(n_phase)])
-    I = np.array(e.currents_A, dtype=float)
-    nI = len(I)
-    R = np.full((n_soh, n_phase, nI), np.nan)          # reward (revenue - energy)
-    Tm = np.full((n_soh, n_phase, nI), np.nan)         # hours
-    D = np.full((n_soh, n_phase, nI), np.nan)          # SOH drop
-    for i, soh in enumerate(S):
-        _report(progress, 0.8 * i / n_soh, "tabulating cycle outcomes")
-        theta = np.array([soh, p.R_int0 * (1 + p.beta_int * (1 - soh)), p.R_ct0 * (1 + p.beta_ct * (1 - soh))])
-        for j, T in enumerate(Tj):
-            out = predict_cycle(theta, I, float(T), pf)
-            ok = out["T_peak"] <= e.T_max_C - thermal_margin_K        # margin for estimation / model error
-            if e.cold_derate_below_C is not None and T_lo[j] < e.cold_derate_below_C:
-                ok &= I <= e.cold_max_current_A
-            ok &= out["ah"] > 0.05
-            R[i, j] = np.where(ok, np.array(e.price_per_Ah, dtype=float) * out["ah"] - e.energy_price_per_Wh * out["e_in"], np.nan)
-            Tm[i, j] = np.where(ok, out["hours"], np.nan)
-            D[i, j] = np.where(ok, np.maximum(out["dsoh"], 1e-7), np.nan)
-    h = mm.hazard(S)[:, None, None]
-    step = n_phase / period                            # phase bins advanced per cycle
-    C_p, t_p = mm.replacement_cost, mm.planned_downtime_h
-    C_u, t_u = mm.unplanned_factor * mm.replacement_cost, mm.unplanned_downtime_h
-
-    def solve(rho: float) -> Tuple[np.ndarray, np.ndarray]:
-        W = np.zeros((n_soh, n_phase))
-        rep = -C_p - rho * t_p
-        for _ in range(4000):
-            Wn = np.empty_like(W)
-            # expected continuation over the stochastic phase advance (fractional bins)
-            W_next_phase = (1 - step) * W + step * np.roll(W, -1, axis=1)
-            q = np.full((n_soh, n_phase, nI), -np.inf)
-            for a in range(nI):
-                s_next = S[:, None] - D[:, :, a]
-                below = s_next < soh_min
-                cont = np.empty((n_soh, n_phase))
-                for j in range(n_phase):
-                    cont[:, j] = np.interp(np.clip(s_next[:, j], soh_min, 1.0), S, W_next_phase[:, j])
-                cont = np.where(below, rep, cont)             # below the floor: forced planned swap
-                val = R[:, :, a] - rho * Tm[:, :, a] + h[:, :, 0] * (-C_u - rho * t_u) + (1 - h[:, :, 0]) * cont
-                q[:, :, a] = np.where(np.isnan(val), -np.inf, val)
-            best = q.max(axis=2)
-            Wn = np.maximum(best, rep)
-            if np.max(np.abs(Wn - W)) < tol:
-                W = Wn
-                break
-            W = Wn
-        act = np.where(q.max(axis=2) >= rep, q.argmax(axis=2), -1)
-        return W, act
-
-    lo, hi = -1.0, 2.0
-    rho_path: List[float] = []
-    for it in range(40):
-        rho = 0.5 * (lo + hi)
-        W, act = solve(rho)
-        # value of a new cell: at a given install phase (0 = the simulation's start) or season-averaged
-        g = float(W[-1, install_phase]) if install_phase is not None else float(W[-1].mean())
-        rho_path.append(rho)
-        _report(progress, 0.8 + 0.2 * it / 40, f"Dinkelbach rho = {rho:.4f}")
-        if g > 0:
-            lo = rho
-        else:
-            hi = rho
-        if hi - lo < 1e-5:
-            break
-    rho = 0.5 * (lo + hi)
-    W, act = solve(rho)
-    boundary = np.array([S[act[:, j] < 0].max() if (act[:, j] < 0).any() else np.nan for j in range(n_phase)])
-    _report(progress, 1.0, "DP solved")
-    return DPResult(rho, S, phases, Tj, act, tuple(float(x) for x in I), W, rho_path, period, boundary)
-
-
-def evaluate_dp_policy(dp: DPResult, e: Economics, p: CellPhysics, mm: Optional[MaintenanceModel] = None,
-                       plant: Optional[CellPhysics] = None, seed: int = 0, fast_dt_s: float = 60.0,
-                       ambient_mean_C: float = 20.0, ambient_amp_C: float = 16.0) -> Tuple[Dict[str, float], pd.DataFrame]:
-    """Closed-loop simulation of the DP policy (observer noise, optional plant mismatch) until
-    the DP calls for replacement, scored with the same renewal economics as the grid study."""
-    mm = mm or MaintenanceModel(replacement_cost=e.replacement_cost)
-    pol = DPPolicy(dp)
-    pf = replace(p, dt_s=float(fast_dt_s))
-    plf = replace(plant, dt_s=float(fast_dt_s)) if plant is not None else None
-    life = simulate_life(pol, pf, replace(e, soh_eol=float(dp.soh_grid[0])), seed=seed,
-                         ambient_mean_C=ambient_mean_C, ambient_amp_C=ambient_amp_C, plant=plf)
-    stop = len(life)
-    for k, r in life.iterrows():
-        if pol.replace_now(float(r["SOH_hat"]), int(r["cycle"])):
-            stop = int(k)
-            break
-    seg = life.iloc[:stop]
-    out = renewal_from_segment(seg, float(seg["SOH"].iloc[-1]) if len(seg) else float("nan"), e, mm)
-    out.update({"policy": "DP optimal (operation + replacement)", "kind": "dp", "w": float("nan")})
-    return out, life.iloc[: max(stop, 1)]
-
-
-# =============================================================================
-# 22. HALF-CELL OCV FITTING: QUANTITATIVE LLI / LAM_PE / LAM_NE
-# =============================================================================
-def ocp_lco(y: np.ndarray) -> np.ndarray:
-    """LiCoO2 open-circuit potential vs Li/Li+ (Ramadass et al., J. Electrochem. Soc. 151 (2004)
-    A196), y = lithium fraction in Li_y CoO2, valid ~0.4 < y < 1."""
-    y = np.clip(np.asarray(y, dtype=float), 0.35, 0.995)
-    y2 = y * y
-    num = -4.656 + 88.669 * y2 - 401.119 * y2 ** 2 + 342.909 * y2 ** 3 - 462.471 * y2 ** 4 + 433.434 * y2 ** 5
-    den = -1.0 + 18.933 * y2 - 79.532 * y2 ** 2 + 37.311 * y2 ** 3 - 73.083 * y2 ** 4 + 95.96 * y2 ** 5
-    return num / den
-
-
-def ocp_graphite(x: np.ndarray) -> np.ndarray:
-    """Graphite (MCMB) open-circuit potential vs Li/Li+ (Doyle et al., J. Electrochem. Soc. 143
-    (1996) 1890; used by Ramadass 2004), x = lithium fraction in Li_x C6."""
-    x = np.clip(np.asarray(x, dtype=float), 0.005, 1.0)
-    return (0.7222 + 0.1387 * x + 0.029 * np.sqrt(x) - 0.0172 / x + 0.0019 / x ** 1.5
-            + 0.2808 * np.exp(0.9 - 15.0 * x) - 0.7984 * np.exp(0.4465 * x - 0.4108))
-
-
-HALF_CELL_KEYS = ("Cp_Ah", "Cn_Ah", "y0", "x0", "eta_V")
-
-
-def full_cell_ocv(q: np.ndarray, Cp: float, Cn: float, y0: float, x0: float, eta: float = 0.0) -> np.ndarray:
-    """Discharge from the top-of-charge state: positive lithiates y = y0 + Q/Cp, negative
-    delithiates x = x0 - Q/Cn;  V = U_p(y) - U_n(x) - eta (eta: residual polarisation)."""
-    return ocp_lco(y0 + q / Cp) - ocp_graphite(x0 - q / Cn) - eta
-
-
-@dataclass
-class HalfCellFit:
-    n: int
-    params: Dict[str, float]
-    rmse_mV: float
-    q: np.ndarray
-    v: np.ndarray
-    v_fit: np.ndarray
-    capacity_Ah: float
-
-    @property
-    def li_inventory_Ah(self) -> float:
-        """Cyclable lithium at top of charge: x0 Cn + y0 Cp (Ah)."""
-        return self.params["x0"] * self.params["Cn_Ah"] + self.params["y0"] * self.params["Cp_Ah"]
-
-
-def pseudo_ocv(cell_df: pd.DataFrame, cycle_index: int, r_dc: Optional[float], n_pts: int = 120
-               ) -> Tuple[np.ndarray, np.ndarray]:
-    """IR-compensated discharge curve V + |I| R_dc on a uniform capacity grid (pseudo-OCV)."""
-    d = cell_df[(cell_df["Cycle_Index"] == cycle_index) & (cell_df["Current_A"] < -0.1)]
-    if len(d) < 20:
-        return np.array([]), np.array([])
-    i = np.abs(d["Current_A"].to_numpy())
-    q = np.cumsum(i * d["dt"].to_numpy()) / 3600.0
-    v = d["Voltage_V"].to_numpy() + (i * r_dc if r_dc and np.isfinite(r_dc) else 0.0)
-    grid = np.linspace(q[0], q[-1], n_pts)
-    return grid, np.interp(grid, q, v)
-
-
-def fit_half_cell(q: np.ndarray, v: np.ndarray, x0_guess: Optional[np.ndarray] = None, n: int = 0,
-                  capacity_Ah: Optional[float] = None, fixed: Optional[Dict[str, float]] = None,
-                  dv_weight: float = 0.0, global_search: bool = True) -> HalfCellFit:
-    """Least-squares fit of (Cp, Cn, y0, x0, eta) to a pseudo-OCV curve with multi-start.
-    ``fixed`` pins parameters (e.g. electrode capacities from the beginning-of-life fit)."""
-    from scipy.optimize import least_squares
-
-    fixed = dict(fixed or {})
-    free = [k for k in HALF_CELL_KEYS if k not in fixed]
-    lo = {"Cp_Ah": 1.0, "Cn_Ah": 1.0, "y0": 0.35, "x0": 0.45, "eta_V": -0.05}
-    hi = {"Cp_Ah": 5.0, "Cn_Ah": 5.0, "y0": 0.70, "x0": 0.98, "eta_V": 0.30}
-    qmax = float(q[-1])
-
-    def unpack(z):
-        prm = dict(fixed)
-        prm.update(dict(zip(free, z)))
-        return prm
-
-    # differential-voltage target: electrode phase transitions (graphite staging) live in dV/dQ,
-    # which is what makes the negative electrode identifiable (Bloom 2005; Dubarry 2012)
-    from scipy.signal import savgol_filter
-    win = min(len(q) - (1 - len(q) % 2), 15)
-    dvdq = savgol_filter(np.gradient(v, q), win, 2) if win >= 5 else np.gradient(v, q)
-    inner = (q > 0.05 * qmax) & (q < 0.92 * qmax)          # avoid the steep ends of the curve
-    w_dv = dv_weight * float(np.std(v)) / max(float(np.std(dvdq[inner])), 1e-9)
-
-    def resid(z):
-        prm = unpack(z)
-        vf = full_cell_ocv(q, prm["Cp_Ah"], prm["Cn_Ah"], prm["y0"], prm["x0"], prm["eta_V"])
-        r = vf - v
-        rd = w_dv * (np.gradient(vf, q) - dvdq)[inner]
-        # stoichiometry must stay physical over the discharged window
-        pen_y = max(0.0, prm["y0"] + qmax / prm["Cp_Ah"] - 0.995)
-        pen_x = max(0.0, 0.01 - (prm["x0"] - qmax / prm["Cn_Ah"]))
-        return np.concatenate([r, rd / math.sqrt(max(inner.sum(), 1) / len(q)), 10.0 * np.array([pen_y, pen_x])])
-
-    starts = [x0_guess] if x0_guess is not None else []
-    if global_search:
-        from scipy.optimize import differential_evolution
-        de = differential_evolution(lambda z: float(np.sum(resid(z) ** 2)), [(lo[k], hi[k]) for k in free],
-                                    seed=0, maxiter=60, popsize=12, tol=1e-7, polish=False)
-        starts.insert(0, de.x)
-    for cp, cn, y0, x0 in ((2.6, 2.4, 0.45, 0.85), (3.0, 2.8, 0.50, 0.80), (2.3, 2.2, 0.42, 0.90),
-                           (3.5, 3.0, 0.55, 0.75)):
-        base = {"Cp_Ah": cp, "Cn_Ah": cn, "y0": y0, "x0": x0, "eta_V": 0.05}
-        starts.append(np.array([base[k] for k in free]))
-    best = None
-    for z0 in starts:
-        z0 = np.clip(np.asarray(z0, dtype=float), [lo[k] + 1e-6 for k in free], [hi[k] - 1e-6 for k in free])
-        try:
-            sol = least_squares(resid, z0, bounds=([lo[k] for k in free], [hi[k] for k in free]), max_nfev=400)
-        except Exception:
-            continue
-        if best is None or sol.cost < best.cost:
-            best = sol
-    if best is None:
-        raise ValueError("half-cell fit failed")
-    prm = unpack(best.x)
-    vf = full_cell_ocv(q, prm["Cp_Ah"], prm["Cn_Ah"], prm["y0"], prm["x0"], prm["eta_V"])
-    return HalfCellFit(n, prm, float(1e3 * np.sqrt(np.mean((vf - v) ** 2))), q, v, vf,
-                       float(capacity_Ah if capacity_Ah is not None else qmax))
-
-
-def half_cell_trajectory(cell_df: pd.DataFrame, ct_cell: pd.DataFrame, n_curves: int = 8,
-                         ir_compensate: bool = True) -> Tuple[pd.DataFrame, List[HalfCellFit]]:
-    """Degradation-mode analysis by half-cell OCV fitting (Dubarry et al. 2012; Birkl et al. 2017):
-    the beginning-of-life curve fixes the electrode balance; every later curve is refitted
-    starting from the previous solution. Modes relative to the first fit:
-        LAM_PE = 1 - Cp/Cp0,  LAM_NE = 1 - Cn/Cn0,
-        LLI    = 1 - (x0 Cn + y0 Cp) / (x0 Cn + y0 Cp)_0     (cyclable lithium lost)
-    Caveat: NASA discharges run near 1C; the IR-compensated curve is a pseudo-OCV and the
-    residual polarisation is absorbed by eta. Treat absolute values as estimates."""
-    good = ct_cell[~ct_cell["outlier"]].sort_values("n").reset_index(drop=True)
-    if len(good) < 3:
-        return pd.DataFrame(), []
-    idx = np.unique(np.linspace(0, len(good) - 1, min(n_curves, len(good))).astype(int))
-    fits: List[HalfCellFit] = []
-    prev = None
-    for i in idx:
-        r = good.loc[i]
-        rdc = float(r["R_dc_ohm"]) if ir_compensate and np.isfinite(r.get("R_dc_ohm", np.nan)) else None
-        q, v = pseudo_ocv(cell_df, int(r["Cycle_Index"]), rdc)
-        if len(q) < 20:
-            continue
-        try:
-            f = fit_half_cell(q, v, prev, int(r["n"]), float(r["Capacity_Ah"]), global_search=prev is None)
-            if prev is not None and f.rmse_mV > 2 * fits[0].rmse_mV + 5:      # lost track: global restart
-                f = fit_half_cell(q, v, prev, int(r["n"]), float(r["Capacity_Ah"]), global_search=True)
-        except ValueError:
-            continue
-        fits.append(f)
-        prev = np.array([f.params[k] for k in HALF_CELL_KEYS])
-    if not fits:
-        return pd.DataFrame(), []
-    f0 = fits[0]
-    rows = []
-    for f in fits:
-        rows.append({"n": f.n, "Capacity loss (%)": 100 * (1 - f.capacity_Ah / f0.capacity_Ah),
-                     "LLI (%)": 100 * (1 - f.li_inventory_Ah / f0.li_inventory_Ah),
-                     "LAM_PE (%)": 100 * (1 - f.params["Cp_Ah"] / f0.params["Cp_Ah"]),
-                     "LAM_NE (%)": 100 * (1 - f.params["Cn_Ah"] / f0.params["Cn_Ah"]),
-                     "Cp (Ah)": f.params["Cp_Ah"], "Cn (Ah)": f.params["Cn_Ah"], "y0": f.params["y0"],
-                     "x0": f.params["x0"], "η (mV)": 1e3 * f.params["eta_V"], "Fit RMSE (mV)": f.rmse_mV})
-    return pd.DataFrame(rows), fits
-
-
-# =============================================================================
-# 23. HIERARCHICAL BAYESIAN DEGRADATION MODEL, PHYSICS-MEAN GP, STACKED ENSEMBLE
-# =============================================================================
-HB_NAME = "Hierarchical Bayes"
-GP_NAME = "Physics-mean GP"
-ENS_NAME = "Stacked ensemble"
-AH_SCALE = 100.0                      # throughput unit of the power law (Ah)
-
-
-def _pl_soh(theta: np.ndarray, ah: np.ndarray) -> np.ndarray:
-    """SOH = s0 (1 - e^a (Ah / 100)^z); theta = (s0, a, z), vectorised over rows of theta."""
-    th = np.atleast_2d(theta)
-    return th[:, [0]] * (1 - np.exp(th[:, [1]]) * np.power(np.maximum(ah, 1e-9)[None, :] / AH_SCALE, th[:, [2]]))
-
-
-def _fit_power_law(ah: np.ndarray, y: np.ndarray, prior_mu: Optional[np.ndarray] = None,
-                   prior_prec_chol: Optional[np.ndarray] = None, sigma: float = 0.01,
-                   s0_prior: Optional[Tuple[float, float]] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """MAP / least-squares fit of (s0, a, z) with an optional Gaussian prior on (a, z) (given by
-    the Cholesky factor of its precision) and on s0. Returns (theta, Laplace covariance)."""
-    from scipy.optimize import least_squares
-
-    def resid(th):
-        r = [(_pl_soh(th, ah)[0] - y) / sigma]
-        if prior_mu is not None:
-            r.append(prior_prec_chol.T @ (th[1:] - prior_mu))
-        if s0_prior is not None:
-            r.append(np.array([(th[0] - s0_prior[0]) / s0_prior[1]]))
-        return np.concatenate(r)
-
-    loss0 = max(float(np.median(y[:3]) - np.median(y[-3:])), 1e-3)
-    x0 = np.array([float(np.median(y[:3])), math.log(loss0 / max((ah.max() / AH_SCALE), 1e-3)),
-                   1.0 if prior_mu is None else float(prior_mu[1])])
-    if prior_mu is not None:
-        x0[1] = float(prior_mu[0])
-    sol = least_squares(resid, x0, bounds=([0.8, -12.0, 0.3], [1.2, 3.0, 3.0]))
-    J = sol.jac
-    cov = np.linalg.pinv(J.T @ J)
-    return sol.x, cov
-
-
-def _cell_covariates(meta: pd.DataFrame, cells: Sequence[str], T_ref_C: float = 24.0) -> np.ndarray:
-    T = meta.loc[list(cells), "T_mean_C"].to_numpy(float) + 273.15
-    I = meta.loc[list(cells), "I_dis_A"].to_numpy(float)
-    return np.column_stack([np.ones(len(cells)), 1e3 * (1 / (T_ref_C + 273.15) - 1 / T), np.log(np.maximum(I, 0.1) / 2.0)])
-
-
-def hierarchical_population(ct: pd.DataFrame, exclude: Optional[str] = None, min_cycles: int = 15,
-                            covariates: bool = True) -> Dict[str, Any]:
-    """Population layer: fit (a, z) to every other cell, then regress them on operating covariates
-    (Arrhenius 1/T term, log current) - the prior mean for a cell with given conditions - and
-    estimate the between-cell covariance by the method of moments (sample covariance of the
-    residuals minus the mean within-cell estimation covariance, floored)."""
-    good = ct[~ct["outlier"]]
-    meta = cell_meta(ct)
-    fits, covs, cells, resid_sd = [], [], [], []
-    for c, d in good.groupby("Cell_ID"):
-        if c == exclude or len(d) < min_cycles:
-            continue
-        d = d.sort_values("n")
-        ah = d["cum_Ah"].to_numpy(float) - float(d["cum_Ah"].iloc[0])
-        y = d["SOH"].to_numpy(float)
-        if ah.max() < 5 or np.median(y[:3]) - np.median(y[-3:]) < 0.01:
-            continue
-        try:
-            th, cv = _fit_power_law(ah, y)
-        except Exception:
-            continue
-        resid_sd.append(float(np.std(_pl_soh(th, ah)[0] - y)))
-        fits.append(th[1:])
-        covs.append(cv[1:, 1:] * resid_sd[-1] ** 2 / 0.01 ** 2)     # rescale Laplace cov to actual noise
-        cells.append(c)
-    if len(fits) < 3:
-        return {"available": False, "n_cells": len(fits)}
-    F = np.array(fits)
-    X = _cell_covariates(meta, cells)
-    use_cov = covariates and len(fits) >= 6
-    if use_cov:
-        keep = [0] + [j for j in (1, 2) if np.std(X[:, j]) > 1e-6]
-        X = X[:, keep]
-        G, *_ = np.linalg.lstsq(X, F, rcond=None)
-        R = F - X @ G
-    else:
-        keep = [0]
-        G = F.mean(axis=0, keepdims=True)
-        R = F - G[0]
-    within = np.mean(covs, axis=0)
-    S = np.cov(R.T) - within
-    w, V = np.linalg.eigh((S + S.T) / 2)
-    S = V @ np.diag(np.maximum(w, [0.05 ** 2, 0.03 ** 2])) @ V.T          # floor: never over-trust the prior
-    return {"available": True, "G": G, "keep": keep, "Sigma": S, "n_cells": len(fits), "cells": cells,
-            "fits": F, "sigma_obs": float(np.median(resid_sd)), "covariates": use_cov}
-
-
-def _hb_posterior(ct: pd.DataFrame, cell_id: str, n0: int) -> Dict[str, Any]:
-    good_all = ct[~ct["outlier"]]
-    good = good_all[good_all["Cell_ID"] == cell_id].sort_values("n")
-    obs = good[good["n"] <= n0]
-    if len(obs) < 5:
-        raise ValueError("Hierarchical Bayes: too few observations before n0.")
-    pop = hierarchical_population(ct, exclude=cell_id)
-    if not pop["available"]:
-        raise ValueError("Hierarchical Bayes: fewer than three cohort cells with measurable fade.")
-    meta = cell_meta(ct)
-    x = _cell_covariates(meta, [cell_id])[:, pop["keep"]]
-    mu = (x @ pop["G"])[0]
-    L = np.linalg.cholesky(np.linalg.inv(pop["Sigma"]))
-    ah0 = float(good["cum_Ah"].iloc[0])
-    ah = obs["cum_Ah"].to_numpy(float) - ah0
-    y = obs["SOH"].to_numpy(float)
-    sig = max(pop["sigma_obs"], 0.003)
-    th, cov = _fit_power_law(ah, y, mu, L, sig, (float(np.median(y[:3])), 0.01))
-    prior_var = np.diag(pop["Sigma"])
-    shrink = float(np.mean(np.diag(cov)[1:] / prior_var))       # 1 = posterior still the prior, 0 = data-dominated
-    return {"theta": th, "cov": cov, "mu": mu, "pop": pop, "good": good, "obs": obs, "ah0": ah0, "sigma": sig,
-            "dah": _mean_ah_per_cycle(good, n0), "prior_weight": min(1.0, shrink)}
-
-
-def hierarchical_bayes_forecast(ct: pd.DataFrame, cell_id: str, n0: int, eol_ah: float = DEFAULT_EOL_AH,
-                                level: float = 0.9, n_samples: int = 600, horizon_factor: float = 1.5,
-                                seed: int = 0, alpha: float = 0.2) -> ProgForecast:
-    """Hierarchical (partially pooled) Bayesian degradation model.
-        Cell level:        SOH = s0 [1 - e^a (Ah/100)^z] + noise
-        Population level:  (a, z) ~ N(G x_cell, Sigma),  x = [1, 1/T_ref - 1/T, ln(I/2)]
-    The population (fitted on the other cells) is the prior; the target's cycles <= n0 update it
-    (Laplace posterior). Early on the forecast is the fleet's expectation for these operating
-    conditions; as data arrive it becomes this battery's own law - the self-updating idea in
-    Bayesian form. 'prior_weight' reports how much the forecast still leans on the fleet."""
-    P = _hb_posterior(ct, cell_id, n0)
-    rng = np.random.default_rng(seed)
-    th = rng.multivariate_normal(P["theta"], P["cov"] + 1e-12 * np.eye(3), size=n_samples)
-    th[:, 2] = np.clip(th[:, 2], 0.3, 3.0)
-    good, obs = P["good"], P["obs"]
-    n_max = int(good["n"].max() * horizon_factor)
-    n_grid = np.arange(1, n_max + 1)
-    fut = n_grid[n_grid > n0]
-    a_now = float(obs["cum_Ah"].iloc[-1] - P["ah0"])
-    ah_f = np.maximum(a_now + (fut - int(obs["n"].iloc[-1])) * P["dah"], 1e-6)
-    paths = _pl_soh(th, ah_f) + P["sigma"] * 0.5 * rng.standard_normal((n_samples, 1))
-    soh_eol = soh_eol_for(float(good["C_bol_Ah"].iloc[0]), eol_ah)
-    fc = _paths_to_forecast(HB_NAME, n_grid, good["n"].to_numpy(), good["SOH"].to_numpy(), n0, paths, soh_eol, level,
-                            {"a": float(P["theta"][1]), "z": float(P["theta"][2]), "prior_a": float(P["mu"][0]),
-                             "prior_z": float(P["mu"][1]), "prior_weight": P["prior_weight"],
-                             "population_cells": P["pop"]["n_cells"], "covariates": P["pop"]["covariates"]})
-    fc.metrics = forecast_metrics(good["n"].to_numpy(), good["SOH"].to_numpy(), n_grid, fc.soh, n0, soh_eol,
-                                  fc.lo, fc.hi, alpha)
-    fc.paths = paths
-    return fc
-
-
-def physics_gp_forecast(ct: pd.DataFrame, cell_id: str, n0: int, eol_ah: float = DEFAULT_EOL_AH,
-                        level: float = 0.9, n_samples: int = 600, horizon_factor: float = 1.5, seed: int = 0,
-                        alpha: float = 0.2) -> ProgForecast:
-    """Physics-mean Gaussian process: the hierarchical-Bayes power law supplies the mean trend and a
-    GP (RBF in throughput + white noise) learns the structured residual of this battery (e.g. a
-    developing knee or regeneration patterns). Far from the data the GP reverts to the physics mean
-    while its variance widens the band - honest extrapolation."""
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
-
-    P = _hb_posterior(ct, cell_id, n0)
-    good, obs = P["good"], P["obs"]
-    ah_obs = obs["cum_Ah"].to_numpy(float) - P["ah0"]
-    res = obs["SOH"].to_numpy(float) - _pl_soh(P["theta"], ah_obs)[0]
-    kern = ConstantKernel(1e-4, (1e-7, 1e-1)) * RBF(length_scale=max(ah_obs.max() / 4, 5.0),
-                                                    length_scale_bounds=(2.0, 1e4)) + WhiteKernel(1e-5, (1e-8, 1e-2))
-    import warnings
-    with warnings.catch_warnings():            # a flat residual legitimately drives the length scale to its bound
-        warnings.simplefilter("ignore")
-        gp = GaussianProcessRegressor(kern, normalize_y=False, random_state=seed).fit(ah_obs[:, None], res)
-    rng = np.random.default_rng(seed)
-    th = rng.multivariate_normal(P["theta"], P["cov"] + 1e-12 * np.eye(3), size=n_samples)
-    th[:, 2] = np.clip(th[:, 2], 0.3, 3.0)
-    n_max = int(good["n"].max() * horizon_factor)
-    n_grid = np.arange(1, n_max + 1)
-    fut = n_grid[n_grid > n0]
-    a_now = float(ah_obs[-1])
-    ah_f = np.maximum(a_now + (fut - int(obs["n"].iloc[-1])) * P["dah"], 1e-6)
-    g_mu, g_sd = gp.predict(ah_f[:, None], return_std=True)
-    paths = _pl_soh(th, ah_f) + g_mu[None, :] + g_sd[None, :] * rng.standard_normal((n_samples, 1))
-    soh_eol = soh_eol_for(float(good["C_bol_Ah"].iloc[0]), eol_ah)
-    fc = _paths_to_forecast(GP_NAME, n_grid, good["n"].to_numpy(), good["SOH"].to_numpy(), n0, paths, soh_eol, level,
-                            {"kernel": str(gp.kernel_), "residual_sd": float(np.std(res))})
-    fc.metrics = forecast_metrics(good["n"].to_numpy(), good["SOH"].to_numpy(), n_grid, fc.soh, n0, soh_eol,
-                                  fc.lo, fc.hi, alpha)
-    fc.paths = paths
-    return fc
-
-
-def stacked_ensemble(ct: pd.DataFrame, cell_id: str, n0: int, soh_eol: float,
-                     preds: Dict[str, Tuple[np.ndarray, np.ndarray]], bands: Dict[str, Tuple],
-                     ruls: Dict[str, Optional[np.ndarray]], ekf: Optional[EKFResult], level: float,
-                     prog_keys: Sequence[str], alpha: float = 0.2, backtest_frac: float = 0.6
-                     ) -> Optional[ProgForecast]:
-    """Skill-weighted stacking of the fast probabilistic paradigms (ECM twin, semi-empirical,
-    particle filter, hierarchical Bayes, physics-mean GP). Weights w_i ~ 1 / RMSE_i^2 come from an
-    honest backtest on the target's own history: every member forecasts from n_b = 0.6 n0 and is
-    scored on n_b < n <= n0 (no data beyond n0 is used). The ensemble band is the moment-matched
-    mixture of the members' bands; its RUL samples are drawn from the members by weight."""
-    good = ct[(ct["Cell_ID"] == cell_id) & ~ct["outlier"]].sort_values("n")
-    n_b = int(max(5, round(backtest_frac * n0)))
-    win = good[(good["n"] > n_b) & (good["n"] <= n0)]
-    if len(win) < 3:
-        return None
-    fns = {"semi": (SEMI_NAME, semi_empirical_forecast), "pf": (PF_NAME, particle_filter_forecast),
-           "hb": (HB_NAME, hierarchical_bayes_forecast), "gp": (GP_NAME, physics_gp_forecast)}
-    rmse: Dict[str, float] = {}
-    for k in prog_keys:
-        name, fn = fns[k]
-        if name not in preds:
-            continue
-        try:
-            f = fn(ct, cell_id, n_b, DEFAULT_EOL_AH, level)
-            rmse[name] = float(np.sqrt(np.mean((np.interp(win["n"], f.n_grid, f.soh) - win["SOH"]) ** 2)))
-        except Exception:
-            continue
-    tname = TWIN_NAMES["dual"]
-    if ekf is not None and tname in preds and ekf.kind == "dual":
-        try:
-            f = twin_forecast(ekf, n_b, int(good["n"].max() * 1.5), soh_eol, level)
-            rmse[tname] = float(np.sqrt(np.mean((np.interp(win["n"], f.n_grid, f.soh) - win["SOH"]) ** 2)))
-        except Exception:
-            pass
-    members = [m for m in rmse if m in bands and bands[m][1] is not None]
-    if len(members) < 2:
-        return None
-    w = np.array([1.0 / (rmse[m] ** 2 + 1e-6) for m in members])
-    w /= w.sum()
-    n_grid = np.arange(1, int(min(preds[m][0].max() for m in members)) + 1)
-    z = 1.6449 if abs(level - 0.9) < 1e-6 else float(__import__("scipy.stats").stats.norm.ppf(0.5 + level / 2))
-    mu = np.array([np.interp(n_grid, *preds[m]) for m in members])
-    sd = np.array([(np.interp(n_grid, bands[m][0], bands[m][2]) - np.interp(n_grid, bands[m][0], bands[m][1]))
-                   / (2 * z) for m in members])
-    mean = w @ mu
-    var = w @ (sd ** 2 + mu ** 2) - mean ** 2
-    half = z * np.sqrt(np.maximum(var, 0))
-    fut = n_grid > n0
-    lo, hi = mean.copy(), mean.copy()
-    lo[fut], hi[fut] = mean[fut] - half[fut], mean[fut] + half[fut]
-    rng = np.random.default_rng(0)
-    pool = []
-    for m, wi in zip(members, w):
-        r = ruls.get(m)
-        if r is not None and len(r):
-            pool.append(rng.choice(np.asarray(r, float), size=max(1, int(round(1000 * wi))), replace=True))
-    rs = np.concatenate(pool) if pool else None
-    fc = ProgForecast(ENS_NAME, n_grid, mean, lo, hi, rs,
-                      {"weights": dict(zip(members, w.round(3).tolist())), "backtest_rmse": rmse, "n_b": n_b})
-    fc.metrics = forecast_metrics(good["n"].to_numpy(), good["SOH"].to_numpy(), n_grid, mean, n0, soh_eol, lo, hi,
-                                  alpha)
-    return fc
