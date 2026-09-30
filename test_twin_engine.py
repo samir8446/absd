@@ -64,7 +64,7 @@ def test_cycle_table_from_synthetic():
     assert set(ct["Cell_ID"]) == set(truth)
     assert ct.groupby("Cell_ID")["n"].max().eq(90).all()
     first = ct.sort_values("n").groupby("Cell_ID")["SOH"].first()
-    assert np.allclose(first, 1.0, atol=0.01)            # robust (smoothed) beginning-of-life baseline
+    assert np.allclose(first, 1.0)
     assert (ct.groupby("Cell_ID")["cum_Ah"].diff().dropna() > 0).all()
     assert {"outlier", "regen", "R_dc_ohm", "C_bol_Ah"} <= set(ct.columns)
 
@@ -429,103 +429,6 @@ def test_ingestion_error_names_the_cause():
         raise AssertionError("no error raised")
     except te.DataError as exc:
         assert "Per-cell reasons" in str(exc)
-
-
-def test_robust_baseline_repairs_crashed_logging_segment():
-    """B0049-B0056 style: an invalid low start followed by an upward level shift."""
-    m, _, _ = te.make_synthetic_master(n_cells=3, n_cycles=40, seed=1)
-    dis = m[(m["Cell_ID"] == "S002") & (m["Cycle_Type"] == "discharge")]
-    first12 = sorted(dis["Cycle_Index"].unique())[:12]
-    m.loc[(m["Cell_ID"] == "S002") & m["Cycle_Index"].isin(first12), "Capacity_Ah"] *= 0.3
-    ct = te.build_cycle_table(te.ParquetStore.from_dataframe(m))
-    good = ct[~ct["outlier"]]
-    assert good["SOH"].max() < 1.02
-    assert ct.loc[ct["Cell_ID"] == "S002", "outlier"].sum() == 12
-    assert ct.loc[ct["Cell_ID"] == "S002", "baseline_suspect"].all()
-    assert not ct.loc[ct["Cell_ID"] == "S001", "baseline_suspect"].any()
-
-
-def test_model_registry_all_models_and_param_validation():
-    X = np.random.default_rng(0).normal(size=(60, 3))
-    y = X[:, 0] - 0.5 * X[:, 1] ** 2
-    assert len(te.ML_MODELS) >= 10
-    for name in te.ML_MODELS:
-        m = te.make_model(name, 0, te.default_params(name)).fit(X, y)
-        assert np.all(np.isfinite(m.predict(X))), name
-    for bad in ({"n_estimators": 5}, {"nope": 1}):
-        try:
-            te.validate_params("Random Forest", bad)
-            raise AssertionError(f"accepted {bad}")
-        except ValueError:
-            pass
-    assert te.validate_params("MLP", {"hidden": "32, 16"})["hidden"] == "32,16"
-
-
-def test_ml_forecast_hyperparams_and_cross_battery():
-    _, ct, _, _ = synthetic()
-    f = te.train_ml_forecast(ct, "S004", 36, "Extra Trees", eol_ah=1.6, model_params={"n_estimators": 60})
-    assert np.isfinite(f.metrics.accuracy) and f.metrics.accuracy > 95 and f.metrics.fade_skill > 0.5
-    x = te.train_ml_forecast(ct, "S004", 10, "Ridge", eol_ah=1.6, train_cells=["S005"])
-    assert np.isfinite(x.metrics.rmse)
-    try:
-        te.train_ml_forecast(ct, "S004", 10, "Ridge", train_cells=["S004"])
-        raise AssertionError("target-only training list accepted")
-    except ValueError:
-        pass
-
-
-def test_soh_estimator_splits_and_leakage_guard():
-    _, ct, imp, _ = synthetic()
-    for split, kw in (("random", {}), ("chronological", {}),
-                      ("by_cell", {"train_cells": ["S001", "S002", "S003"], "test_cells": ["S004"]})):
-        r = te.train_soh_estimator(ct, imp, "Random Forest", split=split, test_frac=0.3,
-                                   params={"n_estimators": 60}, **kw)
-        assert set(r.metrics.index) == {"train", "test"} and r.metrics.loc["test", "Cycles"] >= 3
-        assert r.metrics.loc["test", "R²"] > 0 and len(r.importance) == len(r.features)
-    r = te.train_soh_estimator(ct, imp, "Ridge", split="by_cell", train_cells=["S001", "S002"], test_cells=["S006"])
-    assert set(r.predictions.loc[r.predictions["set"] == "test", "Cell_ID"]) == {"S006"}
-    try:
-        te.train_soh_estimator(ct, imp, "Ridge", features=["Capacity_Ah", "R_dc_ohm"])
-        raise AssertionError("capacity leakage accepted")
-    except ValueError:
-        pass
-
-
-def test_mechanistic_pinn_gradients_and_mechanisms():
-    _, ct, imp, _ = synthetic()
-    cfg = te.PINNConfig(epochs=1, physics="mechanistic", hidden=6, n_colloc=12)
-    ctc = ct[ct["Cell_ID"] == "S004"]
-    data = te.pinn_training_data(ctc, te.valid_eis(imp, "S004"), 36, 120, cfg)
-    net = te.MechanisticPINN(cfg, 2.0, 0.045, 0.07, 120.0)
-    assert te.gradient_check(lambda: net.total(net.losses(data)), net.parameters) < 1e-5
-    r = te.train_pinn(ct, imp, "S004", 36, te.PINNConfig(epochs=300, physics="mechanistic"), eol_ah=1.6)
-    mech = r.mechanisms
-    assert {"Q_SEI", "Q_plating", "Q_LAM"} <= set(mech.columns) and (mech[["Q_SEI", "Q_plating", "Q_LAM"]] >= 0).all().all()
-    assert np.allclose(1 - mech[["Q_SEI", "Q_plating", "Q_LAM"]].sum(axis=1), r.soh, atol=1e-9)
-    no_pl = te.train_pinn(ct, imp, "S004", 36, te.PINNConfig(epochs=50, physics="mechanistic", use_plating=False))
-    assert np.allclose(no_pl.mechanisms["Q_plating"], 0)
-    try:
-        te.PINNConfig(physics="mechanistic", use_sei=False, use_plating=False, use_lam=False)
-        raise AssertionError("no-mechanism config accepted")
-    except ValueError:
-        pass
-
-
-def test_fleet_status_events_and_scenarios():
-    _, ct, _, _ = synthetic()
-    fs = te.fleet_status(ct, eol_ah=1.6)
-    assert len(fs) == 6 and set(fs["Risk"]) <= set(te.RISK_LEVELS)
-    assert fs["risk_level"].is_monotonic_decreasing                       # triage order: worst first
-    past = fs[fs["SOH"] <= fs["SOH_EOL"]]
-    assert (past["Risk"] == "Critical").all() and (past["Quick RUL"] == 0).all()
-    assert not fs["Alerts"].str.contains("past end of life, .*near end of life").any()
-    ev = te.fleet_events(ct)
-    assert {"Cell_ID", "n", "Severity", "Event"} <= set(ev.columns) and len(ev) > 0
-    sf = te.stress_factor_regression(ct)
-    sp = te.scenario_projection(sf, [{"T_C": 24, "I_A": 2.0}, {"T_C": 43, "I_A": 2.0}], 300, soh_eol=0.8)
-    life = sp.groupby("scenario")["life_to_EOL"].first()
-    assert life.iloc[1] < life.iloc[0]                                     # hotter -> shorter life
-    assert (sp["lo"] <= sp["hi"] + 1e-12).all()
 
 
 if __name__ == "__main__":                            # minimal runner when pytest is absent

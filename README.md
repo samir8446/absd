@@ -1,4 +1,4 @@
-# Battery digital twin & operando diagnostics (v4.3)
+# Battery digital twin & operando diagnostics (v4.2)
 
 ```bash
 pip install -r requirements.txt
@@ -10,17 +10,9 @@ docker build -t battery-twin . && docker run -p 8501:8501 -v twin-data:/data bat
 ```
 
 Files: `twin_engine.py` (all computation, no UI), `app.py` (Streamlit views), `benchmark.py`
-(offline sweep → results file the app can load), `tests/` (43 tests incl. gradient checks and
+(offline sweep → results file the app can load), `tests/` (42 tests incl. gradient checks and
 synthetic-truth recovery). Set `TWIN_CACHE_DIR` to persist downloads and uploads; `GIT_COMMIT`
 is recorded in run manifests.
-
-## Operations centre (first view)
-
-Live status bar, fleet KPIs, an instrument cluster (SOH, quick RUL, resistance growth, peak temperature
-gauges) for the selected battery, a fleet health treemap, a risk matrix (remaining life vs degradation
-speed), a triage table with risk levels and alerts, a filterable event log (knees, EOL crossings,
-over-temperature, cold charging, regeneration, excluded cycles) and a one-click HTML report.
-The Operations view adds a what-if scenario planner driven by the cohort stress-factor law.
 
 ## What answers which project question
 
