@@ -1,4 +1,4 @@
-# Battery digital twin & operando diagnostics (v4.1)
+# Battery digital twin & operando diagnostics (v4.2)
 
 ```bash
 pip install -r requirements.txt
@@ -10,7 +10,7 @@ docker build -t battery-twin . && docker run -p 8501:8501 -v twin-data:/data bat
 ```
 
 Files: `twin_engine.py` (all computation, no UI), `app.py` (Streamlit views), `benchmark.py`
-(offline sweep → results file the app can load), `tests/` (35 tests incl. gradient checks and
+(offline sweep → results file the app can load), `tests/` (42 tests incl. gradient checks and
 synthetic-truth recovery). Set `TWIN_CACHE_DIR` to persist downloads and uploads; `GIT_COMMIT`
 is recorded in run manifests.
 
@@ -27,9 +27,14 @@ is recorded in run manifests.
 | M2 · How often should the model update? | Models › update frequency | `update_frequency_study` |
 | M3 · Integrated operation + maintenance | Operations › integrated optimisation | `integrated_om_study`, `renewal_evaluation` |
 
-Forecasting paradigms: ML fade-rate surrogates (RF, GBR, GPR, SVR, MLP, Ridge) with conformal
-bands; dual-EKF ECM twin; semi-empirical power law in Ah; particle filter (double exponential);
-hybrid PINN (Butler–Volmer, SEI-type fade law).
+ML workbench: 14 scikit-learn models with editable hyperparameters, two tasks (forecast future SOH;
+estimate current SOH from operando indicators) and train/test splits by fraction, by time or by battery.
+Forecasting paradigms: ML fade-rate surrogates with conformal bands; dual-EKF ECM twin; semi-empirical power law in Ah; particle filter (double exponential);
+hybrid PINN, lumped or mechanism-resolved (SEI growth, lithium plating, loss of active material,
+resistance coupling, Butler–Volmer and mean-voltage electrochemistry).
+
+Beginning-of-life capacity is estimated robustly: invalid low-start segments (B0049–B0056, crashed logging)
+are detected and excluded, and such cells are flagged `baseline_suspect`.
 
 Known limits: activation energy is not identifiable per cell (fixed or pooled by default);
 split-conformal bands under-cover when the target cell is unlike the calibration cells; the PINN
