@@ -375,6 +375,14 @@ def prepare_cell(cell_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _int_key(df: pd.DataFrame, col: str = "Cycle_Index") -> pd.DataFrame:
+    """merge_asof needs identical key dtypes; parquet files written elsewhere may hold the
+    cycle index as int32 or float64, so normalise to int64 before every as-of merge."""
+    out = df.copy()
+    out[col] = pd.to_numeric(out[col], errors="coerce").round().astype("int64")
+    return out
+
+
 CHARGE_COLUMNS = ["t_cc_s", "t_cv_s", "Q_ch_Ah", "E_ch_Wh", "T_ch_C", "I_ch_A", "V_ch_max_V"]
 
 
@@ -441,7 +449,9 @@ def _cell_cycle_features(df: pd.DataFrame, cell_id: str) -> pd.DataFrame:
 
     out = out.reset_index().rename(columns={"index": "Cycle_Index"})
     ch = _charge_features(df)
+    out["Cycle_Index"] = out["Cycle_Index"].astype("int64")      # parquet may store int32 / float
     if not ch.empty:
+        ch["Cycle_Index"] = ch["Cycle_Index"].astype("int64")
         out = pd.merge_asof(out.sort_values("Cycle_Index"), ch.sort_values("Cycle_Index"),
                             on="Cycle_Index", direction="backward")     # the charge preceding each discharge
         out["eff_energy"] = out["E_dis_Wh"] / out["E_ch_Wh"].where(out["E_ch_Wh"] > 0)
@@ -507,7 +517,10 @@ def build_cycle_table(store: ParquetStore, cells: Optional[Sequence[str]] = None
     _report(progress, 1.0, "features done")
     frames = [feats[c] for c in sorted(feats)]
     if not frames:
-        raise DataError("No discharge cycles with capacity found in the master file.")
+        reasons = pd.Series(errs).value_counts()
+        detail = "; ".join(f"{r} ({k} cell{'s' if k > 1 else ''})" for r, k in reasons.head(3).items())
+        raise DataError("No discharge cycles with capacity found in the master file."
+                        + (f" Per-cell reasons: {detail}" if detail else ""))
     ct = pd.concat(frames, ignore_index=True)
     ct["outlier"] = flag_outliers(ct)
     c_bol = ct[~ct["outlier"]].groupby("Cell_ID")["Capacity_Ah"].first()
@@ -2352,8 +2365,8 @@ def pinn_training_data(ct_cell: pd.DataFrame, eis: pd.DataFrame, n0: int, n_hori
 
     e = eis.copy()
     if len(e):
-        ci = ct_cell.sort_values("Cycle_Index")[["Cycle_Index", "n"]]
-        e = pd.merge_asof(e.sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
+        ci = _int_key(ct_cell.sort_values("Cycle_Index")[["Cycle_Index", "n"]])
+        e = pd.merge_asof(_int_key(e).sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
         e["n"] = e["n"].fillna(1)
         e = e[e["n"] <= n0]
     bv = obs.dropna(subset=["dV_step_V", "I_dis_A"])
@@ -3263,8 +3276,8 @@ def attach_eis(ct: pd.DataFrame, imp: Optional[pd.DataFrame], max_gap_cycles: in
         e = valid_eis(imp, cid)
         if e.empty:
             continue
-        ci = d.sort_values("Cycle_Index")[["Cycle_Index", "n"]]
-        e = pd.merge_asof(e.sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
+        ci = _int_key(d.sort_values("Cycle_Index")[["Cycle_Index", "n"]])
+        e = pd.merge_asof(_int_key(e).sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
         e["n"] = e["n"].fillna(0.5)
         e = e.groupby("n", as_index=False)[["Re_ohm", "Rct_ohm"]].median()
         if len(e) < 1:
@@ -3501,8 +3514,8 @@ def degradation_modes(curves: Sequence[ICACurve], ct_cell: pd.DataFrame,
                      "CL: R_dc growth": 100 * cl, "Peak shift (mV)": 1000 * (curves[0].peak_V - c.peak_V)})
     out = pd.DataFrame(rows)
     if eis is not None and len(eis) >= 2 and {"Re_ohm", "Rct_ohm"} <= set(eis.columns):
-        ci = ct_cell.sort_values("Cycle_Index")[["Cycle_Index", "n"]]
-        e = pd.merge_asof(eis.sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
+        ci = _int_key(ct_cell.sort_values("Cycle_Index")[["Cycle_Index", "n"]])
+        e = pd.merge_asof(_int_key(eis).sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
         e["n"] = e["n"].fillna(1)
         e = e.groupby("n")[["Re_ohm", "Rct_ohm"]].median()
         tot = e["Re_ohm"] + e["Rct_ohm"]

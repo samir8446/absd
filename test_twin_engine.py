@@ -403,6 +403,34 @@ def test_benchmark_with_new_paradigms():
     assert set(bench["paradigm"]) == {te.SEMI_NAME, te.PF_NAME} and bench["error"].isna().all()
 
 
+def test_cycle_index_dtype_from_foreign_parquet():
+    """Colab/pyarrow files may store Cycle_Index as int32 or float64 (EIS too): ingestion and
+    every EIS-aligned analysis must work regardless."""
+    m, imp, _ = te.make_synthetic_master(n_cells=3, n_cycles=30, seed=3)
+    for dt in ("int32", "float64"):
+        mm, ii = m.copy(), imp.copy()
+        mm["Cycle_Index"] = mm["Cycle_Index"].astype(dt)
+        ii["Cycle_Index"] = ii["Cycle_Index"].astype(dt)
+        store = te.ParquetStore.from_dataframe(mm)
+        ct = te.build_cycle_table(store)
+        assert ct["Cell_ID"].nunique() == 3 and ct["t_cc_s"].notna().mean() > 0.9
+        assert te.attach_eis(ct, ii)["Rct_ohm"].notna().any()
+        prep = te.prepare_cell(store.cell_frame("S001"))
+        ctc = ct[ct["Cell_ID"] == "S001"]
+        modes = te.degradation_modes(te.ica_evolution(prep, ctc, 4), ctc, te.valid_eis(ii, "S001"))
+        assert "CL: EIS Rₑ+R_ct growth" in modes.columns
+
+
+def test_ingestion_error_names_the_cause():
+    m, _, _ = te.make_synthetic_master(n_cells=2, n_cycles=10, seed=1)
+    m = m.assign(Capacity_Ah=np.nan)
+    try:
+        te.build_cycle_table(te.ParquetStore.from_dataframe(m))
+        raise AssertionError("no error raised")
+    except te.DataError as exc:
+        assert "Per-cell reasons" in str(exc)
+
+
 if __name__ == "__main__":                            # minimal runner when pytest is absent
     failures = 0
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

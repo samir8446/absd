@@ -750,8 +750,9 @@ def fig_params(res: te.ComparisonResult, P: Palette) -> go.Figure:
                                      line=dict(color=P.pinn, width=2.4),
                                      hovertemplate="%{y:.1f} mΩ<extra></extra>"), row=row, col=1)
         if len(res.eis):
-            ci = res.measured.sort_values("Cycle_Index")[["Cycle_Index", "n"]]
-            ee = pd.merge_asof(res.eis.sort_values("Cycle_Index"), ci, on="Cycle_Index", direction="backward")
+            ci = te._int_key(res.measured.sort_values("Cycle_Index")[["Cycle_Index", "n"]])
+            ee = pd.merge_asof(te._int_key(res.eis).sort_values("Cycle_Index"), ci, on="Cycle_Index",
+                               direction="backward")
             fig.add_trace(go.Scatter(x=ee["n"].fillna(1), y=1e3 * ee[eis_col], mode="markers", name="EIS",
                                      legendgroup="eis", showlegend=show_leg,
                                      marker=dict(color=P.eis, symbol="x", size=9, line=dict(width=1.5)),
